@@ -550,3 +550,80 @@ def get_system_info(print_info: bool = True) -> Tuple[Dict[str, str], str]:
     if print_info:
         print(env_info_str)
     return env_info, env_info_str
+
+# Utilities for Semi-Supervised Learning
+def construct_rbf_matrix(
+    known_pairs: torch.Tensor,
+    unknown_pairs: torch.Tensor,
+    sigma: float,
+    eps_threshold: float
+) -> torch.Tensor:
+    
+    """
+    Construct Radial Basis Functions Weight Matrix for SSL Laplace Learning. 
+
+    :param known_pairs: State-Action pair of already approximated Q functions by Bellman Error.
+    :param unknown_pairs: State-Action pair not tested yet, whose Q function is to be approximated.
+    :param sigma: RBF Kernel variance.
+    :param eps_threshold: Set weights of edge i,j to 0 if state-action distance is over eps_threshold. 
+    :return Weight matrix of shape (batch_size_known_pairs, batch_size_unkown_pairs).
+
+    """
+
+    # Use broadcasting to create difference matrix
+    known_pairs_extended  = known_pairs[:, np.newaxis, :]
+    unknown_pairs_extended = unknown_pairs[np.newaxis, :,:]
+
+    # take norm over state-action dimension and exponentiate
+    matrix_norm_difference = torch.norm(known_pairs_extended - unknown_pairs_extended, dim = 2)**2
+    matrix_exp = torch.exp(matrix_norm_difference/sigma**2)
+
+    # Threshold state-action pairs that are far away
+    rbf_mat = torch.where(matrix_norm_difference > eps_threshold, matrix_exp, 0)
+
+    return rbf_mat
+
+
+def label_propagation(
+    known_states: torch.Tensor,
+    known_actions: torch.Tensor,
+    unkown_states: torch.Tensor,
+    eps_thresh = 1,
+    sigma = 2
+) -> torch.Tensor:
+    """
+    Approximates Q values of the unknown states using Laplace learning with parameters eps_thresh and sigma.            
+    """
+    
+    actions = torch.tensor([0, 1])
+
+    batch_size = known_actions.shape[0]
+
+    known_pairs = torch.cat((known_states, known_actions), dim=1)
+
+    # Repeat to append each possible action (will have to estimate this)
+    repeated_states = unkown_states.repeat((actions.shape[0], 1))
+
+    # Prepare action space to append
+    repeated_actions = actions.repeat_interleave(unkown_states.shape[0]).unsqueeze(1)
+
+    # append (next_state, 0) and (next_state, 1)
+    unknown_pairs = torch.cat((repeated_states, repeated_actions), dim=1)
+
+    # Construct similarity scores with gaussian kernel. 
+    W = construct_rbf_matrix(known_pairs, unknown_pairs, sigma=sigma, eps_threshold=eps_thresh)
+
+    # known states should have shape (batch_size, state_space_size)
+    # Known actions should have shape(batch_size)
+    approximate_values = torch.gather(policy_net(known_states), dim=1, index=known_actions)
+
+    # Division is to normalize by degree, which is equivalent to dividing by sum of each W column.  
+    laplace_guess = (approximate_values.T @ W) / (torch.ones((1, W.shape[0])) @ W)
+
+    # Reshape so that each columbn represents a (next_state), with each row being a different possible action
+    reshaped_laplace = laplace_guess.reshape((batch_size, actions.shape[0]))
+
+    # In target we set max_a Q(s', a) so pick max out of the actions (aka do the max along the second dimension)
+    action_evaluation, _ = reshaped_laplace.max(dim=1)
+
+    return action_evaluation 
