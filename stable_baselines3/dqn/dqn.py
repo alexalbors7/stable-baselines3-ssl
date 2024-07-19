@@ -10,7 +10,17 @@ from stable_baselines3.common.buffers import ReplayBuffer
 from stable_baselines3.common.off_policy_algorithm import OffPolicyAlgorithm
 from stable_baselines3.common.policies import BasePolicy
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
-from stable_baselines3.common.utils import get_linear_fn, get_parameters_by_name, polyak_update
+from stable_baselines3.common.utils import (
+    get_linear_fn, 
+    get_parameters_by_name,
+    polyak_update,
+    construct_rbf_matrix,
+    label_propagation,
+    get_state_action_combo
+    )
+
+
+
 from stable_baselines3.dqn.policies import CnnPolicy, DQNPolicy, MlpPolicy, MultiInputPolicy, QNetwork
 
 SelfDQN = TypeVar("SelfDQN", bound="DQN")
@@ -201,7 +211,17 @@ class DQN(OffPolicyAlgorithm):
             with th.no_grad():
                 if self.ssl:
                     # Perform ssl regression for next_q_Values
-                    next_q_values = None
+                    known_pairs = torch.cat((replay_data.observations, replay_data.actions), dim=1) 
+
+                    labels = torch.gather(policy_net(replay_data.observations), dim=1, index=replay_data.actions)
+                    
+                    # So far hard corde for CartPole-v1, gotta find a way of doing it for all Discrete actions
+                    unknown_pairs = get_state_action_combo(replay_data.next_observations, 
+                                                            actions=torch.tensor([0, 1]))
+
+                    W = construct_rbf_matrix(known_pairs, unknown_pairs, sigma=2., eps_threshold=1.)
+
+                    next_q_values = laplace_learning(known_pairs, labels, unknown_pairs, W)   
                 else:
                     # Compute the next Q-values using the target network
                     next_q_values = self.q_net_target(replay_data.next_observations)
