@@ -583,23 +583,12 @@ def construct_rbf_matrix(
 
     return rbf_mat
 
-
-def label_propagation(
-    known_states: torch.Tensor,
-    known_actions: torch.Tensor,
-    unkown_states: torch.Tensor,
-    eps_thresh = 1,
-    sigma = 2
+def get_state_action_combinations(
+    states: torch.Tensor,
+    actions: torch.Tensor
 ) -> torch.Tensor:
-    """
-    Approximates Q values of the unknown states using Laplace learning with parameters eps_thresh and sigma.            
-    """
-    
-    actions = torch.tensor([0, 1])
 
-    batch_size = known_actions.shape[0]
-
-    known_pairs = torch.cat((known_states, known_actions), dim=1)
+    batch_size = actions.shape[0]
 
     # Repeat to append each possible action (will have to estimate this)
     repeated_states = unkown_states.repeat((actions.shape[0], 1))
@@ -607,18 +596,31 @@ def label_propagation(
     # Prepare action space to append
     repeated_actions = actions.repeat_interleave(unkown_states.shape[0]).unsqueeze(1)
 
-    # append (next_state, 0) and (next_state, 1)
-    unknown_pairs = torch.cat((repeated_states, repeated_actions), dim=1)
+    # append (next_state, ac[0]) and (next_state, ac[1])...
 
+    state_action_combinations = torch.cat((repeated_states, repeated_actions), dim=1)
+    
+    return state_action_combinations
+
+def laplace_learning(
+    labeled_pairs: torch.Tensor,
+    labels: torch.Tensor,
+    unlabeled_pairs: torch.Tensor,
+    W = Optional(int)
+) -> torch.Tensor:
+    """
+    Approximates Q values of the unknown states using Laplace learning from labeled          
+    """
     # Construct similarity scores with gaussian kernel. 
-    W = construct_rbf_matrix(known_pairs, unknown_pairs, sigma=sigma, eps_threshold=eps_thresh)
+    W = construct_rbf_matrix(labeled_pairs, unlabeled_pairs, sigma=sigma, eps_threshold=eps_thresh)
 
     # known states should have shape (batch_size, state_space_size)
     # Known actions should have shape(batch_size)
-    approximate_values = torch.gather(policy_net(known_states), dim=1, index=known_actions)
+
+    labels = torch.gather(policy_net(known_states), dim=1, index=known_actions)
 
     # Division is to normalize by degree, which is equivalent to dividing by sum of each W column.  
-    laplace_guess = (approximate_values.T @ W) / (torch.ones((1, W.shape[0])) @ W)
+    laplace_guess = (labels.T @ W) / (torch.ones((1, W.shape[0])) @ W)
 
     # Reshape so that each columbn represents a (next_state), with each row being a different possible action
     reshaped_laplace = laplace_guess.reshape((batch_size, actions.shape[0]))
