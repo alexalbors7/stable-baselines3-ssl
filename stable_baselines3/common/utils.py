@@ -603,7 +603,7 @@ def get_state_action_combinations(
     return state_action_combinations
 
 def laplace_learning(
-    action_dimension: int,
+    num_actions: int,
     labels: th.Tensor,
     W: th.Tensor
 ) -> th.Tensor:
@@ -616,13 +616,20 @@ def laplace_learning(
 
     batch_size = labels.shape[0]
 
+    # print("Batch_size", batch_size)
+
     # Division is to normalize by degree, which is equivalent to dividing by sum of each W column.  
     laplace_guess = (labels.T @ W) / W.sum(axis=0)
 
+    # print("Laplace estimation: ", laplace_guess.shape)
     # Reshape so that each column represents a (next_state), with each row being a different possible action
-    reshaped_laplace = laplace_guess.reshape((batch_size, action_dimension))
+    reshaped_laplace = laplace_guess.reshape((batch_size, num_actions))
+
+    # print("Reshaped laplace:", reshaped_laplace.shape)
 
     # In target we set max_a Q(s', a) so pick max out of the actions (aka do the max along the second dimension)
-    action_evaluation, _ = reshaped_laplace.max(dim=1)
+    selected_actions, _ = reshaped_laplace.max(dim=1)
 
-    return action_evaluation 
+    # print("Selected actions: ", selected_actions.shape)
+
+    return selected_actions 

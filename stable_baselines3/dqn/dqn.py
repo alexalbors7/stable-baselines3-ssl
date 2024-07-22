@@ -212,16 +212,26 @@ class DQN(OffPolicyAlgorithm):
                 if self.ssl:
                     # Perform ssl regression for next_q_Values
                     known_pairs = th.cat((replay_data.observations, replay_data.actions), dim=1) 
+                    
+                    # print("Known Pairs: ", known_pairs.shape)
 
                     labels = th.gather(self.q_net(replay_data.observations), dim=1, index=replay_data.actions)
-                    
+
+                    # print("Labels: ", labels.shape)    
                     # So far hard corde for CartPole-v1, gotta find a way of doing it for all Discrete actions
                     unknown_pairs = get_state_action_combinations(states=replay_data.next_observations, 
                                                             actions=th.tensor([0, 1]))
 
+                    # print("Unkown: ", unknown_pairs.shape)
+
                     W = construct_rbf_matrix(known_pairs, unknown_pairs, sigma=2., eps_threshold=1.)
 
-                    next_q_values = laplace_learning(action_dimension=replay_data.actions.shape[1], labels= labels, W= W)   
+                    # print("W shape:", W.shape)
+
+                    next_q_values = laplace_learning(num_actions=2, labels= labels, W= W) 
+
+                    raise Exception("Wait a min!")
+
                 else:
                     # Compute the next Q-values using the target network
                     next_q_values = self.q_net_target(replay_data.next_observations)
