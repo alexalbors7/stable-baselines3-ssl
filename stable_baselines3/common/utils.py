@@ -591,7 +591,7 @@ def get_state_action_combinations(
     batch_size = actions.shape[0]
 
     # Repeat to append each possible action (will have to estimate this)
-    repeated_states = states.repeat((actions.shape[0], 1))
+    repeated_states = states.repeat((batch_size, 1))
 
     # Prepare action space to append
     repeated_actions = actions.repeat_interleave(states.shape[0]).unsqueeze(1)
@@ -605,7 +605,8 @@ def get_state_action_combinations(
 def laplace_learning(
     num_actions: int,
     labels: th.Tensor,
-    W: th.Tensor
+    W: th.Tensor,
+    max_indices: th.Tensor
 ) -> th.Tensor:
     """
     Approximates Q values of the unknown states using Laplace learning from labeled          
@@ -622,14 +623,21 @@ def laplace_learning(
     laplace_guess = (labels.T @ W) / W.sum(axis=0)
 
     # print("Laplace estimation: ", laplace_guess.shape)
-    # Reshape so that each column represents a (next_state), with each row being a different possible action
+    # Reshape so that each column represents an action, with each row being a different possible next_state in batch_size
     reshaped_laplace = laplace_guess.reshape((batch_size, num_actions))
 
     # print("Reshaped laplace:", reshaped_laplace.shape)
 
-    # In target we set max_a Q(s', a) so pick max out of the actions (aka do the max along the second dimension)
-    selected_actions, _ = reshaped_laplace.max(dim=1)
+    # print("Reshaped laplace", reshaped_laplace)
 
-    # print("Selected actions: ", selected_actions.shape)
+    # print(reshaped_laplace.shape)
+
+    # In target we set max_a Q(s', a) so pick max out of the actions (aka do the max along the second dimension)
+
+    # No, we use indicies corresponding to argmax picked by the q network, since now we do a linear combination. 
+
+    selected_actions = th.gather(reshaped_laplace, 1, max_indices.view(-1, 1))
+    
+    # print("Selected actions: ", selected_actions.shape, selected_actions)
 
     return selected_actions 

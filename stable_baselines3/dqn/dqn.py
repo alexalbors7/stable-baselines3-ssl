@@ -117,7 +117,7 @@ class DQN(OffPolicyAlgorithm):
         _init_setup_model: bool = True,
         ssl: bool = False,
         ssl_initial_rate: float = 1.,
-        ssl_decay_rate: float = 0.995,
+        ssl_decay_rate: float = 0.999,
         ssl_cutoff: float = 0.2
     ) -> None:
         super().__init__(
@@ -158,7 +158,7 @@ class DQN(OffPolicyAlgorithm):
         self.ssl = ssl
         self.ssl_ratio = ssl_initial_rate
         self.ssl_decay_rate = ssl_decay_rate
-        self.ssl_final_rate = ssl_final_rate
+        self.ssl_cutoff = ssl_cutoff
         if _init_setup_model:
             self._setup_model()
 
@@ -222,9 +222,11 @@ class DQN(OffPolicyAlgorithm):
                 # Compute the next Q-values using the target network
                 next_q_values = self.q_net_target(replay_data.next_observations)
                 # Follow greedy policy: use the one with the highest value
-                next_q_values, _ = next_q_values.max(dim=1)
+                next_q_values, max_indices = next_q_values.max(dim=1)
                 # Avoid potential broadcast issue
                 next_q_values = next_q_values.reshape(-1, 1)
+                
+                # print("Max_indices", max_indices.shape, max_indices)
 
                 if self.ssl and (self.ssl_ratio > self.ssl_cutoff):
                     # Perform ssl regression for next_q_Values
@@ -238,10 +240,9 @@ class DQN(OffPolicyAlgorithm):
                     # print("Unkown: ", unknown_pairs.shape)
                     W = construct_rbf_matrix(known_pairs, unknown_pairs, sigma=2., eps_threshold=1.)
                     # print("W shape:", W.shape)
-                    ssl_next_q_values = laplace_learning(num_actions=2, labels= labels, W= W) 
+                    ssl_next_q_values = laplace_learning(num_actions=2, labels= labels, W=W, max_indices=max_indices) 
                     next_q_values = (1 - self.ssl_ratio) * next_q_values + self.ssl_ratio * ssl_next_q_values
                     self.ssl_ratio *= self.ssl_decay_rate
-                    
                 # 1-step TD target
                 target_q_values = replay_data.rewards + (1 - replay_data.dones) * self.gamma * next_q_values
 
@@ -324,3 +325,5 @@ class DQN(OffPolicyAlgorithm):
         state_dicts = ["policy", "policy.optimizer"]
 
         return state_dicts, []
+
+
