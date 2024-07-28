@@ -115,10 +115,6 @@ class DQN(OffPolicyAlgorithm):
         seed: Optional[int] = None,
         device: Union[th.device, str] = "auto",
         _init_setup_model: bool = True,
-        ssl: bool = False,
-        ssl_initial_rate: float = 1.,
-        ssl_decay_rate: float = 0.999,
-        ssl_cutoff: float = 0.2
     ) -> None:
         super().__init__(
             policy,
@@ -155,10 +151,6 @@ class DQN(OffPolicyAlgorithm):
         self.max_grad_norm = max_grad_norm
         # "epsilon" for the epsilon-greedy exploration
         self.exploration_rate = 0.0
-        self.ssl = ssl
-        self.ssl_ratio = ssl_initial_rate
-        self.ssl_decay_rate = ssl_decay_rate
-        self.ssl_cutoff = ssl_cutoff
         if _init_setup_model:
             self._setup_model()
 
@@ -226,23 +218,6 @@ class DQN(OffPolicyAlgorithm):
                 # Avoid potential broadcast issue
                 next_q_values = next_q_values.reshape(-1, 1)
                 
-                # print("Max_indices", max_indices.shape, max_indices)
-
-                if self.ssl and (self.ssl_ratio > self.ssl_cutoff):
-                    # Perform ssl regression for next_q_Values
-                    known_pairs = th.cat((replay_data.observations, replay_data.actions), dim=1) 
-                    # print("Known Pairs: ", known_pairs.shape)
-                    labels = th.gather(self.q_net(replay_data.observations), dim=1, index=replay_data.actions)
-                    # print("Labels: ", labels.shape)    
-                    # So far hard corde for CartPole-v1, gotta find a way of doing it for all Discrete actions
-                    unknown_pairs = get_state_action_combinations(states=replay_data.next_observations, 
-                                                            actions=th.tensor([0, 1]))
-                    # print("Unkown: ", unknown_pairs.shape)
-                    W = construct_rbf_matrix(known_pairs, unknown_pairs, sigma=2., eps_threshold=1.)
-                    # print("W shape:", W.shape)
-                    ssl_next_q_values = laplace_learning(num_actions=2, labels= labels, W=W, max_indices=max_indices) 
-                    next_q_values = (1 - self.ssl_ratio) * next_q_values + self.ssl_ratio * ssl_next_q_values
-                    self.ssl_ratio *= self.ssl_decay_rate
                 # 1-step TD target
                 target_q_values = replay_data.rewards + (1 - replay_data.dones) * self.gamma * next_q_values
 
