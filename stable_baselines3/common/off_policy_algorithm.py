@@ -343,6 +343,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
                 # do as many gradients steps as steps performed during the rollout
                 gradient_steps = self.gradient_steps if self.gradient_steps >= 0 else rollout.episode_timesteps
                 # Special case when the user passes `gradient_steps=0`
+                # Perform gradient descent
                 if gradient_steps > 0:
                     self.train(batch_size=self.batch_size, gradient_steps=gradient_steps)
 
@@ -489,6 +490,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
                     if self._vec_normalize_env is not None:
                         next_obs[i] = self._vec_normalize_env.unnormalize_obs(next_obs[i, :])
 
+        # HERE WE ADD
         replay_buffer.add(
             self._last_original_obs,  # type: ignore[arg-type]
             next_obs,  # type: ignore[arg-type]
@@ -555,7 +557,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
 
             # Select action randomly or according to policy
             actions, buffer_actions = self._sample_action(learning_starts, action_noise, env.num_envs)
-
+            
             # Rescale and perform action
             new_obs, rewards, dones, infos = env.step(actions)
 
@@ -572,6 +574,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             self._update_info_buffer(infos, dones)
 
             # Store data in replay buffer (normalized action and unnormalized observation)
+            # Here it is. Need to add two buffers. 
             self._store_transition(replay_buffer, buffer_actions, new_obs, rewards, dones, infos)  # type: ignore[arg-type]
 
             self._update_current_progress_remaining(self.num_timesteps, self._total_timesteps)
