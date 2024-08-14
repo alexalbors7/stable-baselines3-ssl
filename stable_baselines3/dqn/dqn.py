@@ -19,7 +19,6 @@ from stable_baselines3.common.utils import (
     get_state_action_combinations
     )
 
-import wandb
 
 
 from stable_baselines3.dqn.policies import CnnPolicy, DQNPolicy, MlpPolicy, MultiInputPolicy, QNetwork
@@ -206,10 +205,7 @@ class DQN(OffPolicyAlgorithm):
             # Sample replay buffer
             replay_data = self.replay_buffer.sample(batch_size, env=self._vec_normalize_env)  # type: ignore[union-attr]
             
-            # print("States", replay_data.observations.shape)
-            # print("Next States", replay_data.next_observations.shape)
-            # print("Actions", replay_data.actions.shape)
-
+        
             with th.no_grad():
                 # Compute the next Q-values using the target network
                 next_q_values = self.q_net_target(replay_data.next_observations)
@@ -221,7 +217,6 @@ class DQN(OffPolicyAlgorithm):
                 # 1-step TD target
                 target_q_values = replay_data.rewards + (1 - replay_data.dones) * self.gamma * next_q_values
 
-            
             # Get current Q-values estimates
             current_q_values = self.q_net(replay_data.observations)
 
