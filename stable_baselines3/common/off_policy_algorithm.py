@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple, Type, TypeVar, Union
 import numpy as np
 import torch as th
 from gymnasium import spaces
+import time
 
 from stable_baselines3.common.base_class import BaseAlgorithm
 from stable_baselines3.common.buffers import DictReplayBuffer, ReplayBuffer
@@ -106,6 +107,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         use_sde_at_warmup: bool = False,
         sde_support: bool = True,
         supported_action_spaces: Optional[Tuple[Type[spaces.Space], ...]] = None,
+        p: float = 1.
     ):
         super().__init__(
             policy=policy,
@@ -135,6 +137,9 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         self.replay_buffer_class = replay_buffer_class
         self.replay_buffer_kwargs = replay_buffer_kwargs or {}
         self._episode_storage = None
+
+        # Probability transition is labeled or not. 
+        self.p = p
 
         # Save train freq parameter, will be converted later to TrainFreq object
         self.train_freq = train_freq
@@ -320,10 +325,11 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         )
 
         callback.on_training_start(locals(), globals())
-
+        print("Learning starts")
+        
         assert self.env is not None, "You must set the environment before calling learn()"
         assert isinstance(self.train_freq, TrainFreq)  # check done in _setup_learn()
-
+        
         while self.num_timesteps < total_timesteps:
             rollout = self.collect_rollouts(
                 self.env,
@@ -388,6 +394,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             # we assume that the policy uses tanh to scale the action
             # We use non-deterministic action in the case of SAC, for TD3, it does not matter
             assert self._last_obs is not None, "self._last_obs was not set"
+            " PREDICT ACTION HERE "
             unscaled_action, _ = self.predict(self._last_obs, deterministic=False)
 
         # Rescale the action from [low, high] to [-1, 1]
@@ -490,15 +497,16 @@ class OffPolicyAlgorithm(BaseAlgorithm):
                     if self._vec_normalize_env is not None:
                         next_obs[i] = self._vec_normalize_env.unnormalize_obs(next_obs[i, :])
 
-        # HERE WE ADD
-        replay_buffer.add(
-            self._last_original_obs,  # type: ignore[arg-type]
-            next_obs,  # type: ignore[arg-type]
-            buffer_action,
-            reward_,
-            dones,
-            infos,
-        )
+        # HERE WE ADD (only true reards)
+        if np.random.random() < self.p:
+            replay_buffer.add(
+                self._last_original_obs,  # type: ignore[arg-type]
+                next_obs,  # type: ignore[arg-type]
+                buffer_action,
+                reward_,
+                dones,
+                infos,
+            )
 
         self._last_obs = new_obs
         # Save the unnormalized observation
@@ -550,11 +558,13 @@ class OffPolicyAlgorithm(BaseAlgorithm):
 
         callback.on_rollout_start()
         continue_training = True
+
         while should_collect_more_steps(train_freq, num_collected_steps, num_collected_episodes):
             if self.use_sde and self.sde_sample_freq > 0 and num_collected_steps % self.sde_sample_freq == 0:
                 # Sample a new noise matrix
                 self.actor.reset_noise(env.num_envs)
 
+            " MAIN LOOP. Select action, step"
             # Select action randomly or according to policy
             actions, buffer_actions = self._sample_action(learning_starts, action_noise, env.num_envs)
             
@@ -574,7 +584,8 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             self._update_info_buffer(infos, dones)
 
             # Store data in replay buffer (normalized action and unnormalized observation)
-            # Here it is. Need to add two buffers. 
+            # Modification should be inside, since there can be multiple envs in parallel.  
+            # Here it is. On the info, add a boolean representing if pseudo or not. 
             self._store_transition(replay_buffer, buffer_actions, new_obs, rewards, dones, infos)  # type: ignore[arg-type]
 
             self._update_current_progress_remaining(self.num_timesteps, self._total_timesteps)

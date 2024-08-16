@@ -114,6 +114,7 @@ class DQN(OffPolicyAlgorithm):
         seed: Optional[int] = None,
         device: Union[th.device, str] = "auto",
         _init_setup_model: bool = True,
+        p: float = 1.,
     ) -> None:
         super().__init__(
             policy,
@@ -139,6 +140,7 @@ class DQN(OffPolicyAlgorithm):
             optimize_memory_usage=optimize_memory_usage,
             supported_action_spaces = (spaces.Discrete,),
             support_multi_env = True,
+            p = p
         )
 
         self.exploration_initial_eps = exploration_initial_eps
@@ -202,10 +204,10 @@ class DQN(OffPolicyAlgorithm):
 
         losses = []
         for _ in range(gradient_steps):
-            # Sample replay buffer
+            # Sample replay buffer (only annotated)
+            # Implement another pure replay_buffer with pseudo-rewards?
             replay_data = self.replay_buffer.sample(batch_size, env=self._vec_normalize_env)  # type: ignore[union-attr]
             
-        
             with th.no_grad():
                 # Compute the next Q-values using the target network
                 next_q_values = self.q_net_target(replay_data.next_observations)
@@ -213,7 +215,6 @@ class DQN(OffPolicyAlgorithm):
                 next_q_values, max_indices = next_q_values.max(dim=1)
                 # Avoid potential broadcast issue
                 next_q_values = next_q_values.reshape(-1, 1)
-                
                 # 1-step TD target
                 target_q_values = replay_data.rewards + (1 - replay_data.dones) * self.gamma * next_q_values
 
