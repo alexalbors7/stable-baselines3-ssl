@@ -153,7 +153,6 @@ class BaseBuffer(ABC):
             return env.normalize_reward(reward).astype(np.float32)
         return reward
 
-
 class ReplayBuffer(BaseBuffer):
     """
     Replay buffer used in off-policy algorithms like SAC/TD3.
