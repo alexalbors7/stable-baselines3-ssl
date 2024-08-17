@@ -6,6 +6,7 @@ import torch as th
 from gymnasium import spaces
 from torch.nn import functional as F
 
+import graphlearning as gl
 
 import matplotlib.pyplot as plt
 
@@ -17,10 +18,11 @@ from stable_baselines3.common.utils import (
     get_linear_fn, 
     get_parameters_by_name,
     polyak_update,
-    construct_rbf_matrix,
-    laplace_learning,
-    get_state_action_combinations
+    construct_connected_W,
+    rewards_to_labels,
+    infer_rewards_SSL
     )
+
 
 
 
@@ -98,6 +100,7 @@ class DQN(OffPolicyAlgorithm):
         buffer_size: int = 1_000_000,  # 1e6
         learning_starts: int = 100,
         batch_size: int = 32,
+        pseudo_batch_size: int = 100,
         tau: float = 1.0,
         gamma: float = 0.99,
         train_freq: Union[int, Tuple[int, str]] = 4,
@@ -118,6 +121,7 @@ class DQN(OffPolicyAlgorithm):
         device: Union[th.device, str] = "auto",
         _init_setup_model: bool = True,
         p: float = 1.,
+        pseudo_mode: bool = False
     ) -> None:
         super().__init__(
             policy,
@@ -126,6 +130,7 @@ class DQN(OffPolicyAlgorithm):
             buffer_size,
             learning_starts,
             batch_size,
+            pseudo_batch_size,
             tau,
             gamma,
             train_freq,
@@ -143,16 +148,19 @@ class DQN(OffPolicyAlgorithm):
             optimize_memory_usage=optimize_memory_usage,
             supported_action_spaces = (spaces.Discrete,),
             support_multi_env = True,
-            p = p
+            p = p,
+            pseudo_mode=pseudo_mode
         )
 
         self.exploration_initial_eps = exploration_initial_eps
         self.exploration_final_eps = exploration_final_eps
         self.exploration_fraction = exploration_fraction
         self.target_update_interval = target_update_interval
+
         # For updating the target network with multiple envs:
         self._n_calls = 0
         self.max_grad_norm = max_grad_norm
+
         # "epsilon" for the epsilon-greedy exploration
         self.exploration_rate = 0.0
         if _init_setup_model:
@@ -199,7 +207,7 @@ class DQN(OffPolicyAlgorithm):
         self.exploration_rate = self.exploration_schedule(self._current_progress_remaining)
         self.logger.record("rollout/exploration_rate", self.exploration_rate)
 
-    def train(self, gradient_steps: int, batch_size: int = 100) -> None:
+    def train(self, gradient_steps: int, batch_size: int, pseudo_batch_size: int) -> None:
         # Switch to train mode (this affects batch norm / dropout)
         self.policy.set_training_mode(True)
         # Update learning rate according to schedule
@@ -208,24 +216,67 @@ class DQN(OffPolicyAlgorithm):
         losses = []
         for _ in range(gradient_steps):
             # Sample replay buffer (only annotated)
-            # Implement another pure replay_buffer with pseudo-rewards. 
-            pseudo_replay_data, pseudo_batch_inds = self.pseudo_replay_buffer.sample(batch_size, env=self._vec_normalize_env)
+            # Implement another pure replay_buffer with pseudo-rewards.   
 
-            
-            replay_data, batch_inds = self.replay_buffer.sample(batch_size, env=self._vec_normalize_env)  # type: ignore[union-attr]
-            
+            replay_data, batch_inds = self.replay_buffer.sample(batch_size = batch_size, env=self._vec_normalize_env)  # type: ignore[union-attr]
+
+            if self.pseudo_mode:
+
+                pseudo_replay_data, pseudo_batch_inds = self.pseudo_replay_buffer.sample(batch_size = pseudo_batch_size, env=self._vec_normalize_env)
+
+                pseudo_state_action = th.cat((pseudo_replay_data.observations, pseudo_replay_data.actions), dim=1)
+
+                state_action = th.cat((replay_data.observations, replay_data.actions), dim=1)
+
+                X = th.cat((state_action, pseudo_state_action), dim=0)
+
+                rewards = replay_data.rewards.numpy()
+
+                W = construct_connected_W(X.numpy())
+
+                train_labels, unique_rewards, num_unique_labels = rewards_to_labels(rewards = rewards.astype(int))
+                
+                # print("W shape: ", W.shape)
+                # print("Rewards", rewards.flatten())
+                # print("labels ", labels)
+                # print("Unique rewards", unique_rewards)
+                # print("Num unique labels: ", num_unique_labels)
+
+                train_ind = np.arange(state_action.shape[0], dtype=int)
+
+                # print("train_labels", train_labels)
+
+                pred_labels, scores, w = infer_rewards_SSL(
+                                    method = 'Laplace',
+                                    W = W, 
+                                    train_labels = train_labels,
+                                    train_ind = train_ind,
+                                    get_uncertainty = True
+                                )
+                
+                mask = np.ones(pred_labels.shape[0], dtype=int)
+                mask[train_ind] = 0
+
+                print("SHOULD BE NAN", pseudo_replay_data.rewards.reshape(1, -1))
+
+                print("New labels ", th.from_numpy(pred_labels[mask.astype(bool)]))
+
+                raise Exception
+
 
             " Perform Semi-Supervised Learning on pseudo-data. "
             # Pseudo-code (haha) looks like this
             #
             # Construct W matrix between replay data and pseudo replay data
+            
             #
             # pred_rewards = infer_rewards_SSL(W)
             #
             # self.pseudo_replay_buffer.pseudo_rewards[pseudo_batch_inds] = pred_rewards
             #
             # Maybe even log an f1 score between our pseudo and the true underlying reward. 
-            " <---------------------> "
+            #
+            " <---------------------------------------------------------------------------> "
 
             with th.no_grad():
                 # Compute the next Q-values using the target network

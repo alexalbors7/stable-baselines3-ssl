@@ -86,6 +86,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         buffer_size: int = 1_000_000,  # 1e6
         learning_starts: int = 100,
         batch_size: int = 256,
+        pseudo_batch_size: int = 512,
         tau: float = 0.005,
         gamma: float = 0.99,
         train_freq: Union[int, Tuple[int, str]] = (1, "step"),
@@ -107,7 +108,8 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         use_sde_at_warmup: bool = False,
         sde_support: bool = True,
         supported_action_spaces: Optional[Tuple[Type[spaces.Space], ...]] = None,
-        p: float = 1.
+        p: float = 1.,
+        pseudo_mode: bool = False
     ):
         super().__init__(
             policy=policy,
@@ -127,6 +129,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         )
         self.buffer_size = buffer_size
         self.batch_size = batch_size
+        self.pseudo_batch_size = pseudo_batch_size
         self.learning_starts = learning_starts
         self.tau = tau
         self.gamma = gamma
@@ -141,6 +144,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
 
         # Probability transition is labeled or not. 
         self.p = p
+        self.pseudo_mode = pseudo_mode
 
         # Save train freq parameter, will be converted later to TrainFreq object
         self.train_freq = train_freq
@@ -193,7 +197,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             if issubclass(self.replay_buffer_class, HerReplayBuffer):
                 assert self.env is not None, "You must pass an environment when using `HerReplayBuffer`"
                 replay_buffer_kwargs["env"] = self.env
-                
+
             self.replay_buffer = self.replay_buffer_class(
                 self.buffer_size,
                 self.observation_space,
@@ -205,16 +209,19 @@ class OffPolicyAlgorithm(BaseAlgorithm):
                 pseudo_mode=False
             )
 
-            self.pseudo_replay_buffer = self.replay_buffer_class(
-                self.buffer_size,
-                self.observation_space,
-                self.action_space,
-                device=self.device,
-                n_envs=self.n_envs,
-                optimize_memory_usage=self.optimize_memory_usage,
-                **replay_buffer_kwargs,
-                pseudo_mode=True
-            )
+            self.pseudo_replay_buffer = None
+
+            if self.pseudo_mode:
+                self.pseudo_replay_buffer = self.replay_buffer_class(
+                    self.buffer_size,
+                    self.observation_space,
+                    self.action_space,
+                    device=self.device,
+                    n_envs=self.n_envs,
+                    optimize_memory_usage=self.optimize_memory_usage,
+                    **replay_buffer_kwargs,
+                    pseudo_mode=True
+                )
 
         self.policy = self.policy_class(
             self.observation_space,
@@ -367,13 +374,13 @@ class OffPolicyAlgorithm(BaseAlgorithm):
                 # Special case when the user passes `gradient_steps=0`
                 # Perform gradient descent
                 if gradient_steps > 0:
-                    self.train(batch_size=self.batch_size, gradient_steps=gradient_steps)
+                    self.train(batch_size=self.batch_size, pseudo_batch_size=self.pseudo_batch_size, gradient_steps=gradient_steps)
 
         callback.on_training_end()
 
         return self
 
-    def train(self, gradient_steps: int, batch_size: int) -> None:
+    def train(self, gradient_steps: int, batch_size: int, pseudo_batch_size: int) -> None:
         """
         Sample the replay buffer and do the updates
         (gradient descent and update target networks)
@@ -624,7 +631,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             # Here it is. On the info, add a boolean representing if pseudo or not. 
             self._store_transition(replay_buffer, buffer_actions, new_obs, rewards, dones, infos, pseudo_replay_buffer)  # type: ignore[arg-type]
             self._logger.record("buffer/num_labeled_rewards", self.replay_buffer.size())
-            self._logger.record("buffer/num_unlabeled_rewards", self.pseudo_replay_buffer.size())
+            if self.pseudo_mode: self._logger.record("buffer/num_unlabeled_rewards", self.pseudo_replay_buffer.size())
             self._update_current_progress_remaining(self.num_timesteps, self._total_timesteps)
 
             # For DQN, check if the target network should be updated

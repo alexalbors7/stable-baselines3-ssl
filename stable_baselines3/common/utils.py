@@ -13,6 +13,8 @@ import numpy as np
 import torch as th
 from gymnasium import spaces
 
+import graphlearning as gl
+
 import stable_baselines3 as sb3
 
 # Check if tensorboard is available for pytorch
@@ -551,93 +553,96 @@ def get_system_info(print_info: bool = True) -> Tuple[Dict[str, str], str]:
         print(env_info_str)
     return env_info, env_info_str
 
+
 # Utilities for Semi-Supervised Learning
-def construct_rbf_matrix(
-    known_pairs: th.Tensor,
-    unknown_pairs: th.Tensor,
-    sigma: float,
-    eps_threshold: float
-) -> th.Tensor:
+def construct_connected_W(X: np.ndarray, start_neighbors: int=1) -> np.ndarray:
+    W = gl.weightmatrix.knn(X, start_neighbors)
+    num_neighbors = start_neighbors
+    graph = gl.graph(W)
+
+    connected = graph.isconnected()
+
+    #  Purely based on topological properties, does not require labels. 
+    while not connected:
+        num_neighbors += 1
+        W = gl.weightmatrix.knn(X, num_neighbors)
+        graph = gl.graph(W)
+        connected =  graph.isconnected()
     
+    return W
+
+def infer_rewards_SSL(method: str, W: np.ndarray, train_labels: np.ndarray, 
+                      train_ind: np.ndarray, class_priors = None, 
+                      get_uncertainty = False, bug = False
+                     ):
     """
-    Construct Radial Basis Functions Weight Matrix for SSL Laplace Learning. 
+        Perform graph-based SSL with `method`. 
 
-    :param known_pairs: State-Action pair of already approximated Q functions by Bellman Error.
-    :param unknown_pairs: State-Action pair not tested yet, whose Q function is to be approximated.
-    :param sigma: RBF Kernel variance.
-    :param eps_threshold: Set weights of edge i,j to 0 if state-action distance is over eps_threshold. 
-    :return Weight matrix of shape (batch_size_known_pairs, batch_size_unkown_pairs).
-
+        Parameters
+        ----------
+        method : str
+            Method to use. Either `Laplace`, `Poisson`, or `Poisson_mbo` 
+        W : np.ndarray
+            Weight matrix showing similarities between nodes in the graph
+        train_labels : np.ndarray
+            The labeled dataset labels
+        train_ind : np.ndarray
+            Indices corresponding to train labels (i.e. train_labels = labels[train_ind])
+        class_priors : bool
+            Whether to use class_priors to take class balances into account
+        get_uncertainty : bool = False
+            Whether to return uncertainty vector along with label decisions. For active learning. 
+        bug: bool = False
+            Whether to use original version, or fixed one. 
+        
+        Returns
+        -------
+        
     """
+    # Need to incorporate the reweighng scheme for graph based active learning. 
+    # None is evaluated to False in an if-statement. 
+    if class_priors:
+        class_priors = gl.utils.class_priors(train_labels)
 
-    # Use broadcasting to create difference matrix
-    known_pairs_extended  = known_pairs[:, np.newaxis, :]
-    unknown_pairs_extended = unknown_pairs[np.newaxis, :,:]
-
-    # take norm over state-action dimension and exponentiate
-    matrix_norm_difference = th.norm(known_pairs_extended - unknown_pairs_extended, dim = 2)**2
-    matrix_exp = th.exp(matrix_norm_difference/sigma**2)
-
-    # Threshold state-action pairs that are far away
-    rbf_mat = th.where(matrix_norm_difference > eps_threshold, matrix_exp, 0)
-
-    return rbf_mat
-
-def get_state_action_combinations(
-    states: th.Tensor,
-    actions: th.Tensor
-) -> th.Tensor:
-
-    batch_size = actions.shape[0]
-
-    # Repeat to append each possible action (will have to estimate this)
-    repeated_states = states.repeat((batch_size, 1))
-
-    # Prepare action space to append
-    repeated_actions = actions.repeat_interleave(states.shape[0]).unsqueeze(1)
-
-    # append (next_state, ac[0]) and (next_state, ac[1])...
-
-    state_action_combinations = th.cat((repeated_states, repeated_actions), dim=1)
+    if method not in ["Laplace", 'Poisson', "Poisson_mbo"]:
+        raise ValueError("Invalid model name")
     
-    return state_action_combinations
+    elif method == 'Laplace':
+        model = gl.ssl.laplace(W = W , class_priors=class_priors, bug = bug, reweighting='poisson')
 
-def laplace_learning(
-    num_actions: int,
-    labels: th.Tensor,
-    W: th.Tensor,
-    max_indices: th.Tensor
-) -> th.Tensor:
-    """
-    Approximates Q values of the unknown states using Laplace learning from labeled          
-    """
-    # Construct similarity scores with gaussian kernel. 
-    # known states should have shape (batch_size, state_space_size)
-    # Known actions should have shape(batch_size)
+    elif method == 'Poisson':
+        model = gl.ssl.poisson(W = W , class_priors=class_priors)
 
-    batch_size = labels.shape[0]
+    else:
+        model = gl.ssl.poisson_mbo(W = W , class_priors=class_priors)
 
-    # print("Batch_size", batch_size)
-
-    # Division is to normalize by degree, which is equivalent to dividing by sum of each W column.  
-    laplace_guess = (labels.T @ W) / W.sum(axis=0)
-
-    # print("Laplace estimation: ", laplace_guess.shape)
-    # Reshape so that each column represents an action, with each row being a different possible next_state in batch_size
-    reshaped_laplace = laplace_guess.reshape((batch_size, num_actions))
-
-    # print("Reshaped laplace:", reshaped_laplace.shape)
-
-    # print("Reshaped laplace", reshaped_laplace)
-
-    # print(reshaped_laplace.shape)
-
-    # In target we set max_a Q(s', a) so pick max out of the actions (aka do the max along the second dimension)
-
-    # No, we use indicies corresponding to argmax picked by the q network, since now we do a linear combination. 
-
-    selected_actions = th.gather(reshaped_laplace, 1, max_indices.view(-1, 1))
+    return model.fit_predict(train_ind=np.array(train_ind, dtype=int), train_labels= np.array(train_labels, dtype=int), get_uncertainty = get_uncertainty)
     
-    # print("Selected actions: ", selected_actions.shape, selected_actions)
+def rewards_to_labels(rewards: np.ndarray) -> tuple[np.ndarray, np.ndarray, int]:
+    """
+    Adapts rewards to labels in range 0, 1..., k-1 where k is the number of unique rewards. 
 
-    return selected_actions 
+    Labels are assigned in ascending order, with smallest reward being 0 and largest being k-1.   
+
+    Parameters
+    ----------
+    rewards : np.ndarray
+        Input array, representing rewards
+
+    Returns
+    -------
+    labels : np.ndarray
+        Output array. with rewards being converted to labels
+    unique_rewards: np.ndarray
+        Array containing unique rewards
+    num_unique_labels : int
+        Number of different rewards (labels)
+    """
+    unique_rewards = np.unique(rewards)
+    unique_rewards.sort()
+    conversion_dict = {reward: label for label, reward in enumerate(unique_rewards)}
+
+    print("Conversion dict", conversion_dict)
+    labels = np.array([conversion_dict[reward[0]] for reward in rewards])
+    num_unique_labels = unique_rewards.size
+    return labels, unique_rewards, num_unique_labels
