@@ -111,7 +111,7 @@ class BaseBuffer(ABC):
         """
         upper_bound = self.buffer_size if self.full else self.pos
         batch_inds = np.random.randint(0, upper_bound, size=batch_size)
-        return self._get_samples(batch_inds, env=env)
+        return self._get_samples(batch_inds, env=env), batch_inds
 
     @abstractmethod
     def _get_samples(
@@ -189,9 +189,11 @@ class ReplayBuffer(BaseBuffer):
         n_envs: int = 1,
         optimize_memory_usage: bool = False,
         handle_timeout_termination: bool = True,
+        pseudo_mode: bool = False
     ):
         super().__init__(buffer_size, observation_space, action_space, device, n_envs=n_envs)
-
+        
+        self.pseudo_mode = pseudo_mode
         # Adjust buffer size
         self.buffer_size = max(buffer_size // n_envs, 1)
 
@@ -218,8 +220,12 @@ class ReplayBuffer(BaseBuffer):
             (self.buffer_size, self.n_envs, self.action_dim), dtype=self._maybe_cast_dtype(action_space.dtype)
         )
 
+        " Replay Buffer is just a bunch of big np arrays! Makes things veeery easy! :), can modify directly! Let's go. "
+        " Plan: Keep two replay buffers. If pseudo_replay_buffer, allow pseudo mode so it can hold pseudo and true rewards. "
         self.rewards = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.dones = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+        # Add pseudo compartment if needed. 
+        if self.pseudo_mode:  self.pseudo_rewards = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         # Handle timeouts termination properly if needed
         # see https://github.com/DLR-RM/stable-baselines3/issues/284
         self.handle_timeout_termination = handle_timeout_termination
@@ -250,7 +256,9 @@ class ReplayBuffer(BaseBuffer):
         reward: np.ndarray,
         done: np.ndarray,
         infos: List[Dict[str, Any]],
+        pseudo_reward: np.ndarray = None
     ) -> None:
+        
         # Reshape needed when using multiple envs with discrete observations
         # as numpy cannot broadcast (n_discrete,) to (n_discrete, 1)
         if isinstance(self.observation_space, spaces.Discrete):
@@ -271,11 +279,14 @@ class ReplayBuffer(BaseBuffer):
         self.actions[self.pos] = np.array(action)
         self.rewards[self.pos] = np.array(reward)
         self.dones[self.pos] = np.array(done)
+        if self.pseudo_mode: self.pseudo_rewards[self.pos] = np.array(pseudo_reward)
 
         if self.handle_timeout_termination:
             self.timeouts[self.pos] = np.array([info.get("TimeLimit.truncated", False) for info in infos])
 
         self.pos += 1
+
+        # If full, it overwrites oldest ones. -A
         if self.pos == self.buffer_size:
             self.full = True
             self.pos = 0
@@ -296,11 +307,15 @@ class ReplayBuffer(BaseBuffer):
             return super().sample(batch_size=batch_size, env=env)
         # Do not sample the element with index `self.pos` as the transitions is invalid
         # (we use only one array to store `obs` and `next_obs`)
-        if self.full:
+        if self.full and not self.pseudo_mode:
             batch_inds = (np.random.randint(1, self.buffer_size, size=batch_size) + self.pos) % self.buffer_size
+        elif self.full: # If pseudo, always pick the latest ones. 
+            batch_inds = (np.arange(self.buffer_size-batch_size, self.buffer_size) + self.pos) % self.buffer_size
         else:
             batch_inds = np.random.randint(0, self.pos, size=batch_size)
-        return self._get_samples(batch_inds, env=env)
+        
+        return self._get_samples(batch_inds, env=env), batch_inds
+    
 
     def _get_samples(self, batch_inds: np.ndarray, env: Optional[VecNormalize] = None) -> ReplayBufferSamples:
         # Sample randomly the env idx
@@ -311,6 +326,9 @@ class ReplayBuffer(BaseBuffer):
         else:
             next_obs = self._normalize_obs(self.next_observations[batch_inds, env_indices, :], env)
 
+        # Sample pseudo ones if it is pseudo. -A
+        rewards_to_data = self.pseudo_rewards[batch_inds, env_indices] if self.pseudo_mode else self.rewards[batch_inds, env_indices]
+
         data = (
             self._normalize_obs(self.observations[batch_inds, env_indices, :], env),
             self.actions[batch_inds, env_indices, :],
@@ -318,7 +336,8 @@ class ReplayBuffer(BaseBuffer):
             # Only use dones that are not due to timeouts
             # deactivated by default (timeouts is initialized as an array of False)
             (self.dones[batch_inds, env_indices] * (1 - self.timeouts[batch_inds, env_indices])).reshape(-1, 1),
-            self._normalize_reward(self.rewards[batch_inds, env_indices].reshape(-1, 1), env),
+
+            self._normalize_reward(rewards_to_data.reshape(-1, 1), env),
         )
         return ReplayBufferSamples(*tuple(map(self.to_torch, data)))
 

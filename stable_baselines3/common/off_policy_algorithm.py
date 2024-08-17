@@ -93,8 +93,6 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         action_noise: Optional[ActionNoise] = None,
         replay_buffer_class: Optional[Type[ReplayBuffer]] = None,
         replay_buffer_kwargs: Optional[Dict[str, Any]] = None,
-        pseudo_replay_buffer_class: Optional[Type[ReplayBuffer]] = None,
-        pseudo_replay_buffer_kwargs: Optional[Dict[str, Any]] = None,
         optimize_memory_usage: bool = False,
         policy_kwargs: Optional[Dict[str, Any]] = None,
         stats_window_size: int = 100,
@@ -139,8 +137,6 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         self.replay_buffer_class = replay_buffer_class
         self.replay_buffer_kwargs = replay_buffer_kwargs or {}
         self.pseudo_replay_buffer: Optional[ReplayBuffer] = None
-        self.pseudo_replay_buffer_class = pseudo_replay_buffer_class
-        self.pseudo_replay_buffer_kwargs = pseudo_replay_buffer_kwargs or {}
         self._episode_storage = None
 
         # Probability transition is labeled or not. 
@@ -186,21 +182,18 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         if self.replay_buffer_class is None:
             if isinstance(self.observation_space, spaces.Dict):
                 self.replay_buffer_class = DictReplayBuffer
-                self.pseudo_replay_buffer_class = DictReplayBuffer
             else:
                 self.replay_buffer_class = ReplayBuffer
-                self.pseudo_replay_buffer_class = ReplayBuffer
 
 
         if self.replay_buffer is None:
             # Make a local copy as we should not pickle
             # the environment when using HerReplayBuffer
             replay_buffer_kwargs = self.replay_buffer_kwargs.copy()
-            pseudo_replay_buffer_kwargs = self.pseudo_replay_buffer_kwargs.copy()
             if issubclass(self.replay_buffer_class, HerReplayBuffer):
                 assert self.env is not None, "You must pass an environment when using `HerReplayBuffer`"
                 replay_buffer_kwargs["env"] = self.env
-                pseudo_replay_buffer_kwargs["env"] = self.env
+                
             self.replay_buffer = self.replay_buffer_class(
                 self.buffer_size,
                 self.observation_space,
@@ -209,8 +202,10 @@ class OffPolicyAlgorithm(BaseAlgorithm):
                 n_envs=self.n_envs,
                 optimize_memory_usage=self.optimize_memory_usage,
                 **replay_buffer_kwargs,
+                pseudo_mode=False
             )
-            self.pseudo_replay_buffer = self.pseudo_replay_buffer_class(
+
+            self.pseudo_replay_buffer = self.replay_buffer_class(
                 self.buffer_size,
                 self.observation_space,
                 self.action_space,
@@ -218,6 +213,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
                 n_envs=self.n_envs,
                 optimize_memory_usage=self.optimize_memory_usage,
                 **replay_buffer_kwargs,
+                pseudo_mode=True
             )
 
         self.policy = self.policy_class(
@@ -517,9 +513,6 @@ class OffPolicyAlgorithm(BaseAlgorithm):
                     # VecNormalize normalizes the terminal observation
                     if self._vec_normalize_env is not None:
                         next_obs[i] = self._vec_normalize_env.unnormalize_obs(next_obs[i, :])
-
-        
-
         
         if np.random.random() < self.p:
 
@@ -547,8 +540,8 @@ class OffPolicyAlgorithm(BaseAlgorithm):
                 reward_,
                 dones,
                 infos,
+                pseudo_reward = None
             )
-
 
         self._last_obs = new_obs
         # Save the unnormalized observation
@@ -630,7 +623,8 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             # Modification should be inside, since there can be multiple envs in parallel.  
             # Here it is. On the info, add a boolean representing if pseudo or not. 
             self._store_transition(replay_buffer, buffer_actions, new_obs, rewards, dones, infos, pseudo_replay_buffer)  # type: ignore[arg-type]
-
+            self._logger.record("buffer/num_labeled_rewards", self.replay_buffer.size())
+            self._logger.record("buffer/num_unlabeled_rewards", self.pseudo_replay_buffer.size())
             self._update_current_progress_remaining(self.num_timesteps, self._total_timesteps)
 
             # For DQN, check if the target network should be updated

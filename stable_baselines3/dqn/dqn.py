@@ -6,6 +6,9 @@ import torch as th
 from gymnasium import spaces
 from torch.nn import functional as F
 
+
+import matplotlib.pyplot as plt
+
 from stable_baselines3.common.buffers import ReplayBuffer
 from stable_baselines3.common.off_policy_algorithm import OffPolicyAlgorithm
 from stable_baselines3.common.policies import BasePolicy
@@ -128,8 +131,8 @@ class DQN(OffPolicyAlgorithm):
             train_freq,
             gradient_steps,
             action_noise=None,  # No action noise
-            replay_buffer_class=replay_buffer_class,
-            replay_buffer_kwargs=replay_buffer_kwargs,
+            replay_buffer_class = replay_buffer_class,
+            replay_buffer_kwargs = replay_buffer_kwargs,
             policy_kwargs=policy_kwargs,
             stats_window_size=stats_window_size,
             tensorboard_log=tensorboard_log,
@@ -205,9 +208,25 @@ class DQN(OffPolicyAlgorithm):
         losses = []
         for _ in range(gradient_steps):
             # Sample replay buffer (only annotated)
-            # Implement another pure replay_buffer with pseudo-rewards?
-            replay_data = self.replay_buffer.sample(batch_size, env=self._vec_normalize_env)  # type: ignore[union-attr]
+            # Implement another pure replay_buffer with pseudo-rewards. 
+            pseudo_replay_data, pseudo_batch_inds = self.pseudo_replay_buffer.sample(batch_size, env=self._vec_normalize_env)
+
             
+            replay_data, batch_inds = self.replay_buffer.sample(batch_size, env=self._vec_normalize_env)  # type: ignore[union-attr]
+            
+
+            " Perform Semi-Supervised Learning on pseudo-data. "
+            # Pseudo-code (haha) looks like this
+            #
+            # Construct W matrix between replay data and pseudo replay data
+            #
+            # pred_rewards = infer_rewards_SSL(W)
+            #
+            # self.pseudo_replay_buffer.pseudo_rewards[pseudo_batch_inds] = pred_rewards
+            #
+            # Maybe even log an f1 score between our pseudo and the true underlying reward. 
+            " <---------------------> "
+
             with th.no_grad():
                 # Compute the next Q-values using the target network
                 next_q_values = self.q_net_target(replay_data.next_observations)
