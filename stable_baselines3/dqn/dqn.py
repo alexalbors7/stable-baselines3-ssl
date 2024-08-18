@@ -216,7 +216,6 @@ class DQN(OffPolicyAlgorithm):
         losses = []
         for _ in range(gradient_steps):
             # Sample replay buffer (only annotated)
-            # Implement another pure replay_buffer with pseudo-rewards.   
 
             replay_data, batch_inds = self.replay_buffer.sample(batch_size = batch_size, env=self._vec_normalize_env)  # type: ignore[union-attr]
 
@@ -228,19 +227,19 @@ class DQN(OffPolicyAlgorithm):
 
                 state_action = th.cat((replay_data.observations, replay_data.actions), dim=1)
 
-                X = th.cat((state_action, pseudo_state_action), dim=0)
+                X = th.cat((state_action, pseudo_state_action), dim=0).numpy()
+
+                print(f"X, {X.shape}, {type(X)}")
 
                 rewards = replay_data.rewards.numpy()
 
-                W = construct_connected_W(X.numpy())
+                print(f"rewards, {rewards.shape}, {type(rewards)}")
 
-                train_labels, unique_rewards, num_unique_labels = rewards_to_labels(rewards = rewards.astype(int))
+                W = construct_connected_W(X)
+
+                train_labels, unique_rewards, num_unique_labels, l2r = rewards_to_labels(rewards = rewards.astype(int))
                 
-                # print("W shape: ", W.shape)
-                # print("Rewards", rewards.flatten())
-                # print("labels ", labels)
-                # print("Unique rewards", unique_rewards)
-                # print("Num unique labels: ", num_unique_labels)
+                print(f"Train labels are {train_labels}")
 
                 train_ind = np.arange(state_action.shape[0], dtype=int)
 
@@ -256,10 +255,12 @@ class DQN(OffPolicyAlgorithm):
                 
                 mask = np.ones(pred_labels.shape[0], dtype=int)
                 mask[train_ind] = 0
+                pred_labels = th.from_numpy(pred_labels[mask.astype(bool)])
+                pred_rewards = th.tensor(list(map(lambda l: l2r[l.item()], pred_labels)))
 
-                print("SHOULD BE NAN", pseudo_replay_data.rewards.reshape(1, -1))
-
-                print("New labels ", th.from_numpy(pred_labels[mask.astype(bool)]))
+                print("L2R: ", l2r)
+                print("New labels ", pred_labels)
+                print(f"Which in rewards are {pred_rewards}")
 
                 raise Exception
 

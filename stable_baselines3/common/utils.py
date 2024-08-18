@@ -640,9 +640,15 @@ def rewards_to_labels(rewards: np.ndarray) -> tuple[np.ndarray, np.ndarray, int]
     """
     unique_rewards = np.unique(rewards)
     unique_rewards.sort()
-    conversion_dict = {reward: label for label, reward in enumerate(unique_rewards)}
 
-    print("Conversion dict", conversion_dict)
-    labels = np.array([conversion_dict[reward[0]] for reward in rewards])
+    reward_2_label = {reward: label for label, reward in enumerate(unique_rewards)}
+
+    print("Conversion dict", reward_2_label)
+
+    l2r = {v: k for k, v in reward_2_label.items()}
+
+    labels = np.array([reward_2_label[reward[0]] for reward in rewards])
+    
     num_unique_labels = unique_rewards.size
-    return labels, unique_rewards, num_unique_labels
+
+    return labels, unique_rewards, num_unique_labels, l2r
