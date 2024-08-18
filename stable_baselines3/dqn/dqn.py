@@ -219,6 +219,9 @@ class DQN(OffPolicyAlgorithm):
 
             replay_data, batch_inds = self.replay_buffer.sample(batch_size = batch_size, env=self._vec_normalize_env)  # type: ignore[union-attr]
 
+            observations = replay_data.observations
+            actions = replay_data.actions.long()
+
             if self.pseudo_mode:
 
                 pseudo_replay_data, pseudo_batch_inds = self.pseudo_replay_buffer.sample(batch_size = pseudo_batch_size, env=self._vec_normalize_env)
@@ -229,40 +232,33 @@ class DQN(OffPolicyAlgorithm):
 
                 X = th.cat((state_action, pseudo_state_action), dim=0).numpy()
 
-                print(f"X, {X.shape}, {type(X)}")
-
                 rewards = replay_data.rewards.numpy()
-
-                print(f"rewards, {rewards.shape}, {type(rewards)}")
 
                 W = construct_connected_W(X)
 
                 train_labels, unique_rewards, num_unique_labels, l2r = rewards_to_labels(rewards = rewards.astype(int))
                 
-                print(f"Train labels are {train_labels}")
-
                 train_ind = np.arange(state_action.shape[0], dtype=int)
 
-                # print("train_labels", train_labels)
-
-                pred_labels, scores, w = infer_rewards_SSL(
+                pred_labels = infer_rewards_SSL(
                                     method = 'Laplace',
                                     W = W, 
                                     train_labels = train_labels,
                                     train_ind = train_ind,
-                                    get_uncertainty = True
+                                    get_uncertainty = False
                                 )
                 
                 mask = np.ones(pred_labels.shape[0], dtype=int)
                 mask[train_ind] = 0
                 pred_labels = th.from_numpy(pred_labels[mask.astype(bool)])
-                pred_rewards = th.tensor(list(map(lambda l: l2r[l.item()], pred_labels)))
+                pseudo_rewards = th.tensor(list(map(lambda l: l2r[l.item()], pred_labels)))
 
-                print("L2R: ", l2r)
-                print("New labels ", pred_labels)
-                print(f"Which in rewards are {pred_rewards}")
-
-                raise Exception
+                # print(f"X, {X.shape}, {type(X)}")
+                # print(f"rewards, {rewards.shape}, {type(rewards)}")
+                # print(f"Train labels are {train_labels}")
+                # print("L2R: ", l2r)
+                # print("New labels ", pred_labels)
+                # print(f"Which in rewards are {pred_rewards}")
 
 
             " Perform Semi-Supervised Learning on pseudo-data. "
@@ -289,11 +285,25 @@ class DQN(OffPolicyAlgorithm):
                 # 1-step TD target
                 target_q_values = replay_data.rewards + (1 - replay_data.dones) * self.gamma * next_q_values
 
+                if self.pseudo_mode:
+                    pseudo_next_q_values = self.q_net_target(pseudo_replay_data.next_observations)
+                    # Follow greedy policy: use the one with the highest value
+                    pseudo_next_q_values, pseudo_max_indices = pseudo_next_q_values.max(dim=1)
+                    # Avoid potential broadcast issue
+                    pseudo_next_q_values = pseudo_next_q_values.reshape(-1, 1)
+                    # 1-step TD target
+
+                    pseudo_target_q_values = pseudo_rewards + (1 - replay_data.dones) * self.gamma * next_q_values
+
+                    target_q_values = th.cat((target_q_values, pseudo_target_q_values), dim=0)
+                    observations = th.cat((observations, pseudo_replay_data.observations), dim=0)
+                    actions = th.cat((actions, pseudo_replay_data.actions.long()), dim=0)
+
             # Get current Q-values estimates
-            current_q_values = self.q_net(replay_data.observations)
+            current_q_values = self.q_net(observations)
 
             # Retrieve the q-values for the actions from the replay buffer
-            current_q_values = th.gather(current_q_values, dim=1, index=replay_data.actions.long())
+            current_q_values = th.gather(current_q_values, dim=1, index=actions)
 
             # Compute Huber loss (less sensitive to outliers)
             loss = F.smooth_l1_loss(current_q_values, target_q_values)

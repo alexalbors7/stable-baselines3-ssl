@@ -631,7 +631,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             # Here it is. On the info, add a boolean representing if pseudo or not. 
             self._store_transition(replay_buffer, buffer_actions, new_obs, rewards, dones, infos, pseudo_replay_buffer)  # type: ignore[arg-type]
             self._logger.record("buffer/num_labeled_rewards", self.replay_buffer.size())
-            if self.pseudo_mode: self._logger.record("buffer/num_unlabeled_rewards", self.pseudo_replay_buffer.size())
+            if self.pseudo_mode and self.p < 1: self._logger.record("buffer/num_unlabeled_rewards", self.pseudo_replay_buffer.size())
             self._update_current_progress_remaining(self.num_timesteps, self._total_timesteps)
 
             # For DQN, check if the target network should be updated
