@@ -256,7 +256,6 @@ class ReplayBuffer(BaseBuffer):
         reward: np.ndarray,
         done: np.ndarray,
         infos: List[Dict[str, Any]],
-        pseudo_reward: np.ndarray = None
     ) -> None:
         
         # Reshape needed when using multiple envs with discrete observations
@@ -279,7 +278,7 @@ class ReplayBuffer(BaseBuffer):
         self.actions[self.pos] = np.array(action)
         self.rewards[self.pos] = np.array(reward)
         self.dones[self.pos] = np.array(done)
-        if self.pseudo_mode: self.pseudo_rewards[self.pos] = np.array(pseudo_reward)
+        
 
         if self.handle_timeout_termination:
             self.timeouts[self.pos] = np.array([info.get("TimeLimit.truncated", False) for info in infos])

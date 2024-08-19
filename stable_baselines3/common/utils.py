@@ -643,7 +643,7 @@ def rewards_to_labels(rewards: np.ndarray) -> tuple[np.ndarray, np.ndarray, int]
 
     reward_2_label = {reward: label for label, reward in enumerate(unique_rewards)}
 
-    print("Conversion dict", reward_2_label)
+    # print("Conversion dict", reward_2_label)
 
     l2r = {v: k for k, v in reward_2_label.items()}
 

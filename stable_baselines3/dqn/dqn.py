@@ -214,15 +214,14 @@ class DQN(OffPolicyAlgorithm):
         self._update_learning_rate(self.policy.optimizer)
 
         losses = []
-        for _ in range(gradient_steps):
+        for i in range(gradient_steps):
             # Sample replay buffer (only annotated)
 
             replay_data, batch_inds = self.replay_buffer.sample(batch_size = batch_size, env=self._vec_normalize_env)  # type: ignore[union-attr]
-
             observations = replay_data.observations
             actions = replay_data.actions.long()
 
-            if self.pseudo_mode:
+            if self.pseudo_mode and i % 20*self.train_freq.frequency == 0:
 
                 pseudo_replay_data, pseudo_batch_inds = self.pseudo_replay_buffer.sample(batch_size = pseudo_batch_size, env=self._vec_normalize_env)
 
@@ -260,21 +259,6 @@ class DQN(OffPolicyAlgorithm):
                 # print("New labels ", pred_labels)
                 # print(f"Which in rewards are {pred_rewards}")
 
-
-            " Perform Semi-Supervised Learning on pseudo-data. "
-            # Pseudo-code (haha) looks like this
-            #
-            # Construct W matrix between replay data and pseudo replay data
-            
-            #
-            # pred_rewards = infer_rewards_SSL(W)
-            #
-            # self.pseudo_replay_buffer.pseudo_rewards[pseudo_batch_inds] = pred_rewards
-            #
-            # Maybe even log an f1 score between our pseudo and the true underlying reward. 
-            #
-            " <---------------------------------------------------------------------------> "
-
             with th.no_grad():
                 # Compute the next Q-values using the target network
                 next_q_values = self.q_net_target(replay_data.next_observations)
@@ -293,7 +277,16 @@ class DQN(OffPolicyAlgorithm):
                     pseudo_next_q_values = pseudo_next_q_values.reshape(-1, 1)
                     # 1-step TD target
 
-                    pseudo_target_q_values = pseudo_rewards + (1 - replay_data.dones) * self.gamma * next_q_values
+                    # print(f"pseudo_rewards ,{pseudo_rewards.shape}")
+                    # prcint("pseudo_replay_data.dones.", pseudo_replay_data.dones.shape)
+                    # print("pseudo_next_q_values", pseudo_next_q_values.shape)
+
+                    pseudo_target_q_values = pseudo_rewards.reshape(-1, 1) + (1 - pseudo_replay_data.dones) * self.gamma * pseudo_next_q_values
+                    
+                    self.logger.record("SSL/iters", 1)
+
+                    # print("target_q_values", target_q_values.shape)
+                    # print("pseudo_target_q_values", pseudo_target_q_values.shape)
 
                     target_q_values = th.cat((target_q_values, pseudo_target_q_values), dim=0)
                     observations = th.cat((observations, pseudo_replay_data.observations), dim=0)

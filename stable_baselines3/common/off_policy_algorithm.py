@@ -139,7 +139,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         self.replay_buffer: Optional[ReplayBuffer] = None
         self.replay_buffer_class = replay_buffer_class
         self.replay_buffer_kwargs = replay_buffer_kwargs or {}
-        self.pseudo_replay_buffer: Optional[ReplayBuffer] = None
+        self.unlabeled_replay_buffer: Optional[ReplayBuffer] = None
         self._episode_storage = None
 
         # Probability transition is labeled or not. 
@@ -209,10 +209,10 @@ class OffPolicyAlgorithm(BaseAlgorithm):
                 pseudo_mode=False
             )
 
-            self.pseudo_replay_buffer = None
+            self.unlabeled_replay_buffer = None
 
             if self.pseudo_mode:
-                self.pseudo_replay_buffer = self.replay_buffer_class(
+                self.unlabeled_replay_buffer = self.replay_buffer_class(
                     self.buffer_size,
                     self.observation_space,
                     self.action_space,
@@ -353,6 +353,12 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         assert isinstance(self.train_freq, TrainFreq)  # check done in _setup_learn()
         
         while self.num_timesteps < total_timesteps:
+            # Model 1:
+            # With a certain probability p, obtain the reward. Then we perform SSL on pseduo replay buffer, maybe setting as 'True' if pseudo_reward has ever been computed, that way we avoid using nans for pseudo_reward. Every k steps, perform the SSL update on everything (?) and keep going.
+            # 
+            # To do so, 2 pseudo_replay_buffers. One with labeled data that gets deleted every ssl_freq iterations, other with entire unlabeled data.  
+            # Model 2:
+            # Never obtain reward unless model asks for it. Perform active learning by querying r rewards every k steps based on Laplacian uncertainties. 
             rollout = self.collect_rollouts(
                 self.env,
                 train_freq=self.train_freq,
@@ -361,12 +367,18 @@ class OffPolicyAlgorithm(BaseAlgorithm):
                 learning_starts=self.learning_starts,
                 replay_buffer=self.replay_buffer,
                 log_interval=log_interval,
-                pseudo_replay_buffer=self.pseudo_replay_buffer
+                unlabeled_replay_buffer=self.unlabeled_replay_buffer
             )
 
             if not rollout.continue_training:
                 break
+            
+            # If self.pseudo_mode and self.num_timesteps % update_frequency == 0:
+            # 
+            # SSL on unlabeled data to obtain pseudo_rewards. 
+            #  
 
+            # Train using all labeled and unlabeled data. 
             if self.num_timesteps > 0 and self.num_timesteps > self.learning_starts:
                 # If no `gradient_steps` is specified,
                 # do as many gradients steps as steps performed during the rollout
@@ -477,7 +489,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         reward: np.ndarray,
         dones: np.ndarray,
         infos: List[Dict[str, Any]],
-        pseudo_replay_buffer: ReplayBuffer = None,
+        unlabeled_replay_buffer: ReplayBuffer = None,
     ) -> None:
         """
         Store transition in the replay buffer.
@@ -535,19 +547,18 @@ class OffPolicyAlgorithm(BaseAlgorithm):
                 infos,
             )
 
-        elif pseudo_replay_buffer is not None: # We add into pseudo-labels in case we have pseudo-buffer, indicating so. 
+        elif unlabeled_replay_buffer is not None: # We add into pseudo-labels in case we have pseudo-buffer, indicating so. 
 
             for i, _ in enumerate(infos):
                 infos[i]["labeled"] = False
 
-            pseudo_replay_buffer.add(
+            unlabeled_replay_buffer.add(
                 self._last_original_obs,  # type: ignore[arg-type]
                 next_obs,  # type: ignore[arg-type]
                 buffer_action,
                 reward_,
                 dones,
                 infos,
-                pseudo_reward = None
             )
 
         self._last_obs = new_obs
@@ -564,7 +575,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         action_noise: Optional[ActionNoise] = None,
         learning_starts: int = 0,
         log_interval: Optional[int] = None,
-        pseudo_replay_buffer: ReplayBuffer = None,
+        unlabeled_replay_buffer: ReplayBuffer = None,
     ) -> RolloutReturn:
         """
         Collect experiences and store them into a ``ReplayBuffer``.
@@ -629,9 +640,9 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             # Store data in replay buffer (normalized action and unnormalized observation)
             # Modification should be inside, since there can be multiple envs in parallel.  
             # Here it is. On the info, add a boolean representing if pseudo or not. 
-            self._store_transition(replay_buffer, buffer_actions, new_obs, rewards, dones, infos, pseudo_replay_buffer)  # type: ignore[arg-type]
+            self._store_transition(replay_buffer, buffer_actions, new_obs, rewards, dones, infos, unlabeled_replay_buffer)  # type: ignore[arg-type]
             self._logger.record("buffer/num_labeled_rewards", self.replay_buffer.size())
-            if self.pseudo_mode and self.p < 1: self._logger.record("buffer/num_unlabeled_rewards", self.pseudo_replay_buffer.size())
+            if self.pseudo_mode and self.p < 1: self._logger.record("buffer/num_unlabeled_rewards", self.unlabeled_replay_buffer.size())
             self._update_current_progress_remaining(self.num_timesteps, self._total_timesteps)
 
             # For DQN, check if the target network should be updated
