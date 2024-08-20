@@ -5,6 +5,7 @@ from typing import Any, Dict, Generator, List, Optional, Tuple, Union
 import numpy as np
 import torch as th
 from gymnasium import spaces
+import time
 
 from stable_baselines3.common.preprocessing import get_action_dim, get_obs_shape
 from stable_baselines3.common.type_aliases import (
@@ -229,6 +230,7 @@ class ReplayBuffer(BaseBuffer):
         # Handle timeouts termination properly if needed
         # see https://github.com/DLR-RM/stable-baselines3/issues/284
         self.handle_timeout_termination = handle_timeout_termination
+
         self.timeouts = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
 
         if psutil is not None:
@@ -255,10 +257,10 @@ class ReplayBuffer(BaseBuffer):
         action: np.ndarray,
         reward: np.ndarray,
         done: np.ndarray,
-        infos: List[Dict[str, Any]],
+        infos: List[Dict[str, Any]] = None,
         pseudo_rewards = None
     ) -> None:
-        
+                
         # Reshape needed when using multiple envs with discrete observations
         # as numpy cannot broadcast (n_discrete,) to (n_discrete, 1)
         if isinstance(self.observation_space, spaces.Discrete):
@@ -282,9 +284,12 @@ class ReplayBuffer(BaseBuffer):
         # Only happens for ssl buffer
         if self.pseudo_mode: self.pseudo_rewards[self.pos] = np.array(pseudo_rewards)
 
-        if self.handle_timeout_termination:
-            self.timeouts[self.pos] = np.array([info.get("TimeLimit.truncated", False) for info in infos])
 
+        # Issue here. We use extend and add to copy data from unlabeled buffer to ssl buffer, but SB3 not made for this. We don't have 'infos' as a dictionary when copying data since these Replay buffers only keep the timeouts. 
+        if self.handle_timeout_termination and isinstance(infos, list):
+            self.timeouts[self.pos] = np.array([info.get("TimeLimit.truncated", False) for info in infos])
+        else: self.timeouts[self.pos] = np.array(infos)
+        
         self.pos += 1
 
         # If full, it overwrites oldest ones. -A
@@ -324,9 +329,7 @@ class ReplayBuffer(BaseBuffer):
         else:
             next_obs = self._normalize_obs(self.next_observations[batch_inds, env_indices, :], env)
 
-        # Sample pseudo ones if it is pseudo. -A
-        rewards_to_data = self.pseudo_rewards[batch_inds, env_indices] if self.pseudo_mode else self.rewards[batch_inds, env_indices]
-
+        
         data = (
             self._normalize_obs(self.observations[batch_inds, env_indices, :], env),
             self.actions[batch_inds, env_indices, :],
@@ -334,9 +337,11 @@ class ReplayBuffer(BaseBuffer):
             # Only use dones that are not due to timeouts
             # deactivated by default (timeouts is initialized as an array of False)
             (self.dones[batch_inds, env_indices] * (1 - self.timeouts[batch_inds, env_indices])).reshape(-1, 1),
-
-            self._normalize_reward(rewards_to_data.reshape(-1, 1), env),
+            self._normalize_reward(self.rewards[batch_inds, env_indices].reshape(-1, 1), env),
         )
+        
+        if self.pseudo_mode: data = data + (self.pseudo_rewards[batch_inds, env_indices], )
+
         return ReplayBufferSamples(*tuple(map(self.to_torch, data)))
 
     @staticmethod

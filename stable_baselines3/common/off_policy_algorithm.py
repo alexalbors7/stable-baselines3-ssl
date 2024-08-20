@@ -10,6 +10,7 @@ import numpy as np
 import torch as th
 from gymnasium import spaces
 import time
+from sklearn.metrics import f1_score
 
 from stable_baselines3.common.base_class import BaseAlgorithm
 from stable_baselines3.common.buffers import DictReplayBuffer, ReplayBuffer
@@ -149,7 +150,11 @@ class OffPolicyAlgorithm(BaseAlgorithm):
 
         # Save train and ssl freq parameter, will be converted later to TrainFreq object
         self.train_freq = train_freq
+
+
+        # SSL info
         self.ssl_freq = ssl_freq
+        self.ssl_steps = 0
 
         # Update policy keyword arguments
         if sde_support:
@@ -385,61 +390,81 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             if not rollout.continue_training:
                 break
             
-            # If self.pseudo_mode and self.num_timesteps % update_frequency == 0:
-            # 
-            # SSL on unlabeled data to obtain pseudo_rewards. 
-            #  
-            if self.num_timesteps % self.ssl_freq:
+            if  self.pseudo_mode and self.num_timesteps % self.ssl_freq == 0 and self.num_timesteps > self.learning_starts // 2:
                 # Completely reset the ssl_replay_buffer
+                # print(self.num_timesteps)
+                self.ssl_steps += 1
                 self.ssl_replay_buffer.reset()
                 
+                # This is indices for amount of unlabeled data we get
+                unlabeled_data_ind = np.arange(self.unlabeled_replay_buffer.size())
+                labeled_data_ind = np.arange(self.replay_buffer.size())
+
+
                 # Get all labeled + unlabeled data
-                labeled_replay_data = self.replay_buffer._get_samples(np.arange(self.replay_buffer.size()))
+                labeled_replay_data = self.replay_buffer._get_samples(labeled_data_ind)
+                unlabeled_replay_data = self.unlabeled_replay_buffer._get_samples(unlabeled_data_ind)
 
-                unlabeled_replay_data = self.unlabeled_replay_buffer._get_samples(self.unlabeled_replay_buffer.size())
+                # print("Labeled data obs shape", labeled_replay_data.observations.shape)
+                # print("Unlabeled data obs shape", unlabeled_replay_data.observations.shape)
+                # print("Unlabeled data action shape", unlabeled_replay_data.actions.shape)
 
+                # Pair into (s, a) pairs. (For Active grids it would be easier to use next_obs as the reward setter but kind of cheating)
                 unlabeled_state_action = th.cat((unlabeled_replay_data.observations, unlabeled_replay_data.actions), dim=1)
-
                 state_action = th.cat((labeled_replay_data.observations, labeled_replay_data.actions), dim=1)
 
                 X = th.cat((state_action, unlabeled_state_action), dim=0).numpy()
 
+                X_prime = th.cat((labeled_replay_data.next_observations, unlabeled_replay_data.next_observations), dim=0).numpy()[:, :2]
+
                 rewards = labeled_replay_data.rewards.numpy()
 
-                W = construct_connected_W(X)
+                print("Rewards", rewards.shape)
+
+                W = construct_connected_W(X_prime)
 
                 train_labels, unique_rewards, num_unique_labels, l2r = rewards_to_labels(rewards = rewards.astype(int))
-                
                 train_ind = np.arange(state_action.shape[0], dtype=int)
 
+                # get actual true labels to log f1_scores
+                true_rewards = np.concatenate((rewards, unlabeled_replay_data.rewards.numpy()), axis=0).flatten()
+
+                # print("W", W.shape)
+                # print("Train labels", train_labels, type(train_labels))
+                # print("Train indices", train_ind, type(train_ind))
+
                 pred_labels = infer_rewards_SSL(
-                                    method = 'Laplace',
+                                    method = 'Poisson',
                                     W = W, 
                                     train_labels = train_labels,
                                     train_ind = train_ind,
                                     get_uncertainty = False
                                 )
-                
-                mask = np.ones(pred_labels.shape[0], dtype=int)
-
-                mask[train_ind] = 0
-
-                pred_labels = th.from_numpy(pred_labels[mask.astype(bool)])
 
                 pseudo_rewards = th.tensor(list(map(lambda l: l2r[l.item()], pred_labels)))
 
-                # Basically just unlabeled with different rewards
-                self.ssl_replay_buffer.add(
-                self.unlabeled_replay_buffer.observations,  # type: ignore[arg-type]
-                self.unlabeled_replay_buffer.next_observations,  # type: ignore[arg-type]
-                self.unlabeled_replay_buffer.actions,
-                self.unlabeled_replay_buffer.rewards,
-                self.unlabeled_replay_buffer.dones,
-                self.unlabeled_replay_buffer.infos,
-                pseudo_rewards
-                )
+                print("Train labels", train_labels)
+                print("Predicted rewards", pseudo_rewards[:20])
+                print("True rewards", true_rewards[:20])
 
-                self.ssl_replay_buffer.add()
+                f1 = f1_score(np.delete(pseudo_rewards, train_ind), np.delete(true_rewards,train_ind), average='micro')
+
+                print(f1)
+
+                self.logger.record("ssl/steps", self.ssl_steps)
+                self.logger.record("ssl/f1_score", f1)
+                
+
+                # Basically just unlabeled with different rewards
+                self.ssl_replay_buffer.extend (
+                    unlabeled_replay_data.observations,  # type: ignore[arg-type]
+                    unlabeled_replay_data.next_observations,  # type: ignore[arg-type]
+                    unlabeled_replay_data.actions,
+                    unlabeled_replay_data.rewards,
+                    unlabeled_replay_data.dones,
+                    self.unlabeled_replay_buffer.timeouts[np.arange(self.unlabeled_replay_buffer.size())],
+                    pseudo_rewards = np.delete(pseudo_rewards, train_ind)
+                )
 
 
             # Train using all labeled and unlabeled data. 
@@ -615,7 +640,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
 
             for i, _ in enumerate(infos):
                 infos[i]["labeled"] = False
-
+            
             unlabeled_replay_buffer.add(
                 self._last_original_obs,  # type: ignore[arg-type]
                 next_obs,  # type: ignore[arg-type]

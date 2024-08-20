@@ -608,7 +608,7 @@ def infer_rewards_SSL(method: str, W: np.ndarray, train_labels: np.ndarray,
         raise ValueError("Invalid model name")
     
     elif method == 'Laplace':
-        model = gl.ssl.laplace(W = W , class_priors=class_priors, bug = bug, reweighting='poisson')
+        model = gl.ssl.laplace(W = W , class_priors=class_priors, bug = bug, reweighting='none')
 
     elif method == 'Poisson':
         model = gl.ssl.poisson(W = W , class_priors=class_priors)
@@ -641,13 +641,11 @@ def rewards_to_labels(rewards: np.ndarray) -> tuple[np.ndarray, np.ndarray, int]
     unique_rewards = np.unique(rewards)
     unique_rewards.sort()
 
-    reward_2_label = {reward: label for label, reward in enumerate(unique_rewards)}
+    r2l = {reward: label for label, reward in enumerate(unique_rewards)}
 
-    # print("Conversion dict", reward_2_label)
+    l2r = {v: k for k, v in r2l.items()}
 
-    l2r = {v: k for k, v in reward_2_label.items()}
-
-    labels = np.array([reward_2_label[reward[0]] for reward in rewards])
+    labels = np.array([r2l[reward[0]] for reward in rewards])
     
     num_unique_labels = unique_rewards.size
 

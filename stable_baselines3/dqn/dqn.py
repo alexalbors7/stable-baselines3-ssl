@@ -100,7 +100,7 @@ class DQN(OffPolicyAlgorithm):
         buffer_size: int = 1_000_000,  # 1e6
         learning_starts: int = 100,
         batch_size: int = 32,
-        pseudo_batch_size: int = 100,
+        ssl_batch_size: int = 100,
         tau: float = 1.0,
         gamma: float = 0.99,
         train_freq: Union[int, Tuple[int, str]] = 4,
@@ -130,7 +130,7 @@ class DQN(OffPolicyAlgorithm):
             buffer_size,
             learning_starts,
             batch_size,
-            pseudo_batch_size,
+            ssl_batch_size,
             tau,
             gamma,
             train_freq,
@@ -223,14 +223,14 @@ class DQN(OffPolicyAlgorithm):
             actions = replay_data.actions.long()
 
             if self.pseudo_mode:
-
                 # Won't have problem of having too few samples but it's okay. 
+
                 ssl_batch_size = min((ssl_batch_size, self.ssl_replay_buffer.size()))
+
                 ssl_replay_data, ssl_batch_inds = self.ssl_replay_buffer.sample(batch_size = ssl_batch_size, env=self._vec_normalize_env)  # type: ignore[union-attr]
 
                 ssl_observations = ssl_replay_data.observations
                 ssl_actions = ssl_replay_data.actions.long()
-
 
                 # print(f"X, {X.shape}, {type(X)}")
                 # print(f"rewards, {rewards.shape}, {type(rewards)}")
@@ -256,10 +256,11 @@ class DQN(OffPolicyAlgorithm):
                     pseudo_next_q_values, pseudo_max_indices = pseudo_next_q_values.max(dim=1)
                     # Avoid potential broadcast issue
                     pseudo_next_q_values = pseudo_next_q_values.reshape(-1, 1)
+
                     # 1-step TD target: Use pseudo_rewards, rewards should be the true underlying ones, since will need them for querying in active learning
                     # SSL_buffer is only buffer with pseudo_reward compartment. 
-                    pseudo_target_q_values = ssl_replay_data.pseudo_rewards + (1 - ssl_replay_data.dones) * self.gamma * pseudo_next_q_values
-                       
+                    pseudo_target_q_values = ssl_replay_data.pseudo_rewards.reshape(-1, 1) + (1 - ssl_replay_data.dones) * self.gamma * pseudo_next_q_values
+
                     target_q_values = th.cat((target_q_values, pseudo_target_q_values), dim=0)
                     observations = th.cat((observations, ssl_observations), dim=0)
                     actions = th.cat((actions, ssl_actions), dim=0)
