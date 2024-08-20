@@ -258,7 +258,7 @@ class ReplayBuffer(BaseBuffer):
         reward: np.ndarray,
         done: np.ndarray,
         infos: List[Dict[str, Any]] = None,
-        pseudo_rewards = None
+        pseudo_reward = None
     ) -> None:
                 
         # Reshape needed when using multiple envs with discrete observations
@@ -282,7 +282,10 @@ class ReplayBuffer(BaseBuffer):
         self.rewards[self.pos] = np.array(reward)
         self.dones[self.pos] = np.array(done)
         # Only happens for ssl buffer
-        if self.pseudo_mode: self.pseudo_rewards[self.pos] = np.array(pseudo_rewards)
+        if self.pseudo_mode: 
+            self.pseudo_rewards[self.pos] = np.array(pseudo_reward)
+            print("pseudo: ", pseudo_reward)
+
 
 
         # Issue here. We use extend and add to copy data from unlabeled buffer to ssl buffer, but SB3 not made for this. We don't have 'infos' as a dictionary when copying data since these Replay buffers only keep the timeouts. 
@@ -328,7 +331,6 @@ class ReplayBuffer(BaseBuffer):
             next_obs = self._normalize_obs(self.observations[(batch_inds + 1) % self.buffer_size, env_indices, :], env)
         else:
             next_obs = self._normalize_obs(self.next_observations[batch_inds, env_indices, :], env)
-
         
         data = (
             self._normalize_obs(self.observations[batch_inds, env_indices, :], env),
@@ -340,7 +342,9 @@ class ReplayBuffer(BaseBuffer):
             self._normalize_reward(self.rewards[batch_inds, env_indices].reshape(-1, 1), env),
         )
         
-        if self.pseudo_mode: data = data + (self.pseudo_rewards[batch_inds, env_indices], )
+
+        if self.pseudo_mode: 
+            data = data + (self.pseudo_rewards[batch_inds, env_indices], )
 
         return ReplayBufferSamples(*tuple(map(self.to_torch, data)))
 

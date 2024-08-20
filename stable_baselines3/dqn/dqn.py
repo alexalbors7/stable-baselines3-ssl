@@ -121,7 +121,8 @@ class DQN(OffPolicyAlgorithm):
         device: Union[th.device, str] = "auto",
         _init_setup_model: bool = True,
         p: float = 1.,
-        pseudo_mode: bool = False
+        pseudo_mode: bool = False,
+        ssl_freq: int = 100
     ) -> None:
         super().__init__(
             policy,
@@ -149,7 +150,8 @@ class DQN(OffPolicyAlgorithm):
             supported_action_spaces = (spaces.Discrete,),
             support_multi_env = True,
             p = p,
-            pseudo_mode=pseudo_mode
+            pseudo_mode=pseudo_mode,
+            ssl_freq=ssl_freq
         )
 
         self.exploration_initial_eps = exploration_initial_eps
@@ -252,14 +254,26 @@ class DQN(OffPolicyAlgorithm):
                 if self.pseudo_mode:
                     # Add a batch of SSL'd labeled transitions to accelerate training. 
                     pseudo_next_q_values = self.q_net_target(ssl_replay_data.next_observations)
+
+                    print(pseudo_next_q_values.shape)
                     # Follow greedy policy: use the one with the highest value
                     pseudo_next_q_values, pseudo_max_indices = pseudo_next_q_values.max(dim=1)
+
+                    # print("pseudo next q val", pseudo_next_q_values.shape, pseudo_next_q_values[:10])
+
                     # Avoid potential broadcast issue
                     pseudo_next_q_values = pseudo_next_q_values.reshape(-1, 1)
 
+                    # print("pseudo next q val", pseudo_next_q_values.shape, pseudo_next_q_values[:10])
+
                     # 1-step TD target: Use pseudo_rewards, rewards should be the true underlying ones, since will need them for querying in active learning
                     # SSL_buffer is only buffer with pseudo_reward compartment. 
+                    # THEY ARE NAN. ISSUE. Fixed. 
+                    # print(ssl_replay_data.pseudo_rewards.reshape(-1, 1))
+
                     pseudo_target_q_values = ssl_replay_data.pseudo_rewards.reshape(-1, 1) + (1 - ssl_replay_data.dones) * self.gamma * pseudo_next_q_values
+
+                    # print("pseudo target q val", pseudo_target_q_values.shape, pseudo_target_q_values[:10])
 
                     target_q_values = th.cat((target_q_values, pseudo_target_q_values), dim=0)
                     observations = th.cat((observations, ssl_observations), dim=0)
@@ -270,7 +284,7 @@ class DQN(OffPolicyAlgorithm):
 
             # Retrieve the q-values for the actions from the replay buffer
             current_q_values = th.gather(current_q_values, dim=1, index=actions)
-
+            
             # Compute Huber loss (less sensitive to outliers)
             loss = F.smooth_l1_loss(current_q_values, target_q_values)
             losses.append(loss.item())

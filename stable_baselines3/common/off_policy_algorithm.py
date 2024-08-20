@@ -364,7 +364,6 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         )
 
         callback.on_training_start(locals(), globals())
-        print("Learning starts")
         
         assert self.env is not None, "You must set the environment before calling learn()"
         assert isinstance(self.train_freq, TrainFreq)  # check done in _setup_learn()
@@ -390,7 +389,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             if not rollout.continue_training:
                 break
             
-            if  self.pseudo_mode and self.num_timesteps % self.ssl_freq == 0 and self.num_timesteps > self.learning_starts // 2:
+            if self.pseudo_mode and self.num_timesteps % self.ssl_freq == 0 and self.num_timesteps > self.learning_starts // 2:
                 # Completely reset the ssl_replay_buffer
                 # print(self.num_timesteps)
                 self.ssl_steps += 1
@@ -419,8 +418,6 @@ class OffPolicyAlgorithm(BaseAlgorithm):
 
                 rewards = labeled_replay_data.rewards.numpy()
 
-                print("Rewards", rewards.shape)
-
                 W = construct_connected_W(X_prime)
 
                 train_labels, unique_rewards, num_unique_labels, l2r = rewards_to_labels(rewards = rewards.astype(int))
@@ -443,13 +440,8 @@ class OffPolicyAlgorithm(BaseAlgorithm):
 
                 pseudo_rewards = th.tensor(list(map(lambda l: l2r[l.item()], pred_labels)))
 
-                print("Train labels", train_labels)
-                print("Predicted rewards", pseudo_rewards[:20])
-                print("True rewards", true_rewards[:20])
 
                 f1 = f1_score(np.delete(pseudo_rewards, train_ind), np.delete(true_rewards,train_ind), average='micro')
-
-                print(f1)
 
                 self.logger.record("ssl/steps", self.ssl_steps)
                 self.logger.record("ssl/f1_score", f1)
@@ -463,8 +455,10 @@ class OffPolicyAlgorithm(BaseAlgorithm):
                     unlabeled_replay_data.rewards,
                     unlabeled_replay_data.dones,
                     self.unlabeled_replay_buffer.timeouts[np.arange(self.unlabeled_replay_buffer.size())],
-                    pseudo_rewards = np.delete(pseudo_rewards, train_ind)
+                    np.delete(pseudo_rewards, train_ind)
                 )
+
+                print("Size", self.ssl_replay_buffer.size())
 
 
             # Train using all labeled and unlabeled data. 
