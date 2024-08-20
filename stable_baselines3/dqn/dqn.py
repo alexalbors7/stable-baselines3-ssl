@@ -255,7 +255,6 @@ class DQN(OffPolicyAlgorithm):
                     # Add a batch of SSL'd labeled transitions to accelerate training. 
                     pseudo_next_q_values = self.q_net_target(ssl_replay_data.next_observations)
 
-                    print(pseudo_next_q_values.shape)
                     # Follow greedy policy: use the one with the highest value
                     pseudo_next_q_values, pseudo_max_indices = pseudo_next_q_values.max(dim=1)
 

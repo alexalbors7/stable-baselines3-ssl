@@ -426,12 +426,12 @@ class OffPolicyAlgorithm(BaseAlgorithm):
                 # get actual true labels to log f1_scores
                 true_rewards = np.concatenate((rewards, unlabeled_replay_data.rewards.numpy()), axis=0).flatten()
 
-                # print("W", W.shape)
-                # print("Train labels", train_labels, type(train_labels))
-                # print("Train indices", train_ind, type(train_ind))
-
+                print("W", W.shape)
+                print("Train labels", train_labels, type(train_labels), train_labels.shape)
+                print("Train indices", train_ind, type(train_ind), train_ind.shape)
+                
                 pred_labels = infer_rewards_SSL(
-                                    method = 'Poisson',
+                                    method = 'Laplace',
                                     W = W, 
                                     train_labels = train_labels,
                                     train_ind = train_ind,
@@ -440,13 +440,22 @@ class OffPolicyAlgorithm(BaseAlgorithm):
 
                 pseudo_rewards = th.tensor(list(map(lambda l: l2r[l.item()], pred_labels)))
 
-
                 f1 = f1_score(np.delete(pseudo_rewards, train_ind), np.delete(true_rewards,train_ind), average='micro')
+
+                print("Pred labels", pred_labels)
+                print("Train labels", train_labels.shape, train_labels)
+                print("True rewards", true_rewards.shape)
+                print(f"f1_score {f1}")
+                print("True rewards", true_rewards[:100])
+
+                raise Exception
+            
 
                 self.logger.record("ssl/steps", self.ssl_steps)
                 self.logger.record("ssl/f1_score", f1)
-                
+                self.logger.record("buffer/num_ssl_rewards", self.ssl_replay_buffer.size())
 
+                
                 # Basically just unlabeled with different rewards
                 self.ssl_replay_buffer.extend (
                     unlabeled_replay_data.observations,  # type: ignore[arg-type]
@@ -457,8 +466,6 @@ class OffPolicyAlgorithm(BaseAlgorithm):
                     self.unlabeled_replay_buffer.timeouts[np.arange(self.unlabeled_replay_buffer.size())],
                     np.delete(pseudo_rewards, train_ind)
                 )
-
-                print("Size", self.ssl_replay_buffer.size())
 
 
             # Train using all labeled and unlabeled data. 

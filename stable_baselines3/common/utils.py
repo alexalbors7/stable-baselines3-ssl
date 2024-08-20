@@ -593,7 +593,7 @@ def infer_rewards_SSL(method: str, W: np.ndarray, train_labels: np.ndarray,
         get_uncertainty : bool = False
             Whether to return uncertainty vector along with label decisions. For active learning. 
         bug: bool = False
-            Whether to use original version, or fixed one. 
+            Whether to use original version or fixed one. 
         
         Returns
         -------
@@ -608,7 +608,7 @@ def infer_rewards_SSL(method: str, W: np.ndarray, train_labels: np.ndarray,
         raise ValueError("Invalid model name")
     
     elif method == 'Laplace':
-        model = gl.ssl.laplace(W = W , class_priors=class_priors, bug = bug, reweighting='none')
+        model = gl.ssl.laplace(W = W , class_priors=class_priors, bug = bug, reweighting = 'wnll')
 
     elif method == 'Poisson':
         model = gl.ssl.poisson(W = W , class_priors=class_priors)

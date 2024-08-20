@@ -284,7 +284,6 @@ class ReplayBuffer(BaseBuffer):
         # Only happens for ssl buffer
         if self.pseudo_mode: 
             self.pseudo_rewards[self.pos] = np.array(pseudo_reward)
-            print("pseudo: ", pseudo_reward)
 
 
 
