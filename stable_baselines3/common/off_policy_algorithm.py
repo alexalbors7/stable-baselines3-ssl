@@ -151,7 +151,6 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         # Save train and ssl freq parameter, will be converted later to TrainFreq object
         self.train_freq = train_freq
 
-
         # SSL info
         self.ssl_freq = ssl_freq
         self.ssl_steps = 0
@@ -354,6 +353,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         tb_log_name: str = "run",
         reset_num_timesteps: bool = True,
         progress_bar: bool = False,
+        verbose: bool = False
     ) -> SelfOffPolicyAlgorithm:
         total_timesteps, callback = self._setup_learn(
             total_timesteps,
@@ -399,7 +399,6 @@ class OffPolicyAlgorithm(BaseAlgorithm):
                 unlabeled_data_ind = np.arange(self.unlabeled_replay_buffer.size())
                 labeled_data_ind = np.arange(self.replay_buffer.size())
 
-
                 # Get all labeled + unlabeled data
                 labeled_replay_data = self.replay_buffer._get_samples(labeled_data_ind)
                 unlabeled_replay_data = self.unlabeled_replay_buffer._get_samples(unlabeled_data_ind)
@@ -410,30 +409,47 @@ class OffPolicyAlgorithm(BaseAlgorithm):
 
                 # Pair into (s, a) pairs. (For Active grids it would be easier to use next_obs as the reward setter but kind of cheating)
                 unlabeled_state_action = th.cat((unlabeled_replay_data.observations, unlabeled_replay_data.actions), dim=1)
-                state_action = th.cat((labeled_replay_data.observations, labeled_replay_data.actions), dim=1)
+                labeled_state_action = th.cat((labeled_replay_data.observations, labeled_replay_data.actions), dim=1)
+                X = th.cat((labeled_state_action, unlabeled_state_action), dim=0).numpy()
 
-                X = th.cat((state_action, unlabeled_state_action), dim=0).numpy()
+                labeled_rewards = labeled_replay_data.rewards.numpy()
+                unlabeled_rewards = unlabeled_replay_data.rewards.numpy()
 
-                X_prime = th.cat((labeled_replay_data.next_observations, unlabeled_replay_data.next_observations), dim=0).numpy()[:, :2]
+                # FIRST ENSURE OBSERVATIONS ARE ALL UNIQUE, BOTH FOR LABELED AND UNLABELED, WHILE REPSECTING RELATIVE ORDER, AND SAVE RELEVANT INDICES
+                unique_labeled_next_obs, unique_labeled_ind = np.unique(labeled_replay_data.next_observations[:, :2], axis=0, return_index=True)
+                unique_labeled_ind = np.sort(unique_labeled_ind)
+                unique_labeled_next_obs = labeled_replay_data.next_observations[unique_labeled_ind, :2].numpy()
+                unique_labeled_rewards = labeled_rewards[unique_labeled_ind]
 
-                X_prime_unique = np.unique(X_prime, axis=0)
+                unique_unlabeled_next_obs, unique_unlabeled_ind = np.unique(unlabeled_replay_data.next_observations[:, :2], axis=0, return_index=True)
+                unique_unlabeled_ind = np.sort(unique_unlabeled_ind)
+                unique_unlabeled_next_obs = unlabeled_replay_data.next_observations[unique_unlabeled_ind, :2].numpy()
+                unique_unlabeled_rewards = unlabeled_rewards[unique_unlabeled_ind]
 
-                print("X_prime", X_prime.shape)
-                print("X_prime_unique", X_prime_unique.shape)
+                # THEN CONSTRUCT DATA BEING UNIQUE BY CONCATENATING UNLABELED + LABELED
+                X_prime = np.concatenate((unique_labeled_next_obs, unique_unlabeled_next_obs), axis=0)
+
+                # BUT THERE MIGHT BE MORE REDUNDANCIES
+                X_prime_unique, concatenated_unique_ind = np.unique(X_prime, axis=0, return_index=True)
+
+                concatenated_unique_ind = np.sort(concatenated_unique_ind)
+
+                # KEEP THEM WHILE RESPECTING ORDER, THAT IS ENSURING WE MAINTAIN THE LABELED ONES?
+                X_prime_unique = X_prime[concatenated_unique_ind]
                 
-                rewards = labeled_replay_data.rewards.numpy()
-
                 W = construct_connected_W(X_prime_unique)
 
-                train_labels, unique_rewards, num_unique_labels, l2r = rewards_to_labels(rewards = rewards.astype(int))
+                train_labels, _, _, l2r = rewards_to_labels(rewards = unique_labeled_rewards.astype(int))
 
-                train_ind = np.arange(state_action.shape[0], dtype=int)
+                train_ind = np.arange(unique_labeled_next_obs.shape[0], dtype=int)
 
                 # get actual true labels to log f1_scores
-                true_rewards = np.concatenate((rewards, unlabeled_replay_data.rewards.numpy()), axis=0).flatten()
+                true_rewards = np.concatenate((unique_labeled_rewards, unique_unlabeled_rewards), axis=0).flatten()[concatenated_unique_ind].astype(int)
+                if verbose:
+                    print("Total number of unlabeled+labeled: ", X_prime_unique.shape[0])
+                    print("Train labels", train_labels, type(train_labels), train_labels.shape)
+                    print("Train indices", train_ind, type(train_ind), train_ind.shape)
 
-                print("Train labels", train_labels, type(train_labels), train_labels.shape)
-                print("Train indices", train_ind, type(train_ind), train_ind.shape)
                 
                 pred_labels, _, _ = infer_rewards_SSL(
                                     method = 'Laplace',
@@ -444,33 +460,36 @@ class OffPolicyAlgorithm(BaseAlgorithm):
                                 )
     
                 pseudo_rewards = th.tensor(list(map(lambda l: l2r[l.item()], pred_labels)))
-
                 f1 = f1_score(np.delete(pseudo_rewards, train_ind), np.delete(true_rewards,train_ind), average='micro')
 
-                print("Pred labels", pred_labels[:100])
-                print("Train labels", train_labels.shape, train_labels)
-                print(f"F1_score {f1}")
-                print("True rewards",  true_rewards.shape, true_rewards[:100])
-                print("Pseudo rewards", pseudo_rewards.shape, pseudo_rewards[:100].numpy())
-
-                raise Exception
-            
-
+                if verbose:
+                    print("Pseudo reward shape: ", pseudo_rewards.shape)
+                    print("True reward shape: ", true_rewards.shape)
+                    print(np.delete(pseudo_rewards, train_ind), np.delete(true_rewards,train_ind))
+                    print("Pred labels", pred_labels[:100])
+                    print("Train labels", train_labels.shape, train_labels)
+                    print(f"F1_score {f1}")
+                    print("True rewards",  true_rewards.shape, true_rewards[:100])
+                    print("Pseudo rewards", pseudo_rewards.shape, pseudo_rewards[:100].numpy())
+                
+                
                 self.logger.record("ssl/steps", self.ssl_steps)
                 self.logger.record("ssl/f1_score", f1)
-                self.logger.record("buffer/num_ssl_rewards", self.ssl_replay_buffer.size())
 
-                
+                # Now we can only extend the unique ones, remember...
+
                 # Basically just unlabeled with different rewards
                 self.ssl_replay_buffer.extend (
-                    unlabeled_replay_data.observations,  # type: ignore[arg-type]
-                    unlabeled_replay_data.next_observations,  # type: ignore[arg-type]
-                    unlabeled_replay_data.actions,
-                    unlabeled_replay_data.rewards,
-                    unlabeled_replay_data.dones,
-                    self.unlabeled_replay_buffer.timeouts[np.arange(self.unlabeled_replay_buffer.size())],
-                    np.delete(pseudo_rewards, train_ind)
+                    unlabeled_replay_data.observations[unique_unlabeled_ind],  # type: ignore[arg-type]
+                    unlabeled_replay_data.next_observations[unique_unlabeled_ind],  #
+                    unlabeled_replay_data.actions[unique_unlabeled_ind],
+                    unlabeled_replay_data.rewards[unique_unlabeled_ind],
+                    unlabeled_replay_data.dones[unique_unlabeled_ind],
+                    self.unlabeled_replay_buffer.timeouts[np.arange(self.unlabeled_replay_buffer.size())][unique_unlabeled_ind],
+                    np.delete(pseudo_rewards, train_ind) # No need since pseudo_rewards already processed
                 )
+
+                self.logger.record("buffer/num_ssl_rewards", self.ssl_replay_buffer.size())
 
 
             # Train using all labeled and unlabeled data. 

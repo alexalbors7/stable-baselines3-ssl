@@ -93,7 +93,7 @@ class BaseBuffer(ABC):
         Add a new batch of transitions to the buffer
         """
         # Do a for loop along the batch axis
-        for data in zip(*args):
+        for i, data in enumerate(zip(*args)):
             self.add(*data)
 
     def reset(self) -> None:

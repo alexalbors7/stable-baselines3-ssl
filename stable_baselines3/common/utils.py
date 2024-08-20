@@ -568,7 +568,7 @@ def construct_connected_W(X: np.ndarray, start_neighbors: int=10) -> np.ndarray:
         W = gl.weightmatrix.knn(X, num_neighbors)
         graph = gl.graph(W)
         connected =  graph.isconnected()
-    print(num_neighbors)
+
     return W
 
 def infer_rewards_SSL(method: str, W: np.ndarray, train_labels: np.ndarray, 
