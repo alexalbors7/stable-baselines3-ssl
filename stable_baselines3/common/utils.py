@@ -555,7 +555,7 @@ def get_system_info(print_info: bool = True) -> Tuple[Dict[str, str], str]:
 
 
 # Utilities for Semi-Supervised Learning
-def construct_connected_W(X: np.ndarray, start_neighbors: int=1) -> np.ndarray:
+def construct_connected_W(X: np.ndarray, start_neighbors: int=10) -> np.ndarray:
     W = gl.weightmatrix.knn(X, start_neighbors)
     num_neighbors = start_neighbors
     graph = gl.graph(W)
@@ -568,7 +568,7 @@ def construct_connected_W(X: np.ndarray, start_neighbors: int=1) -> np.ndarray:
         W = gl.weightmatrix.knn(X, num_neighbors)
         graph = gl.graph(W)
         connected =  graph.isconnected()
-    
+    print(num_neighbors)
     return W
 
 def infer_rewards_SSL(method: str, W: np.ndarray, train_labels: np.ndarray, 
@@ -608,7 +608,7 @@ def infer_rewards_SSL(method: str, W: np.ndarray, train_labels: np.ndarray,
         raise ValueError("Invalid model name")
     
     elif method == 'Laplace':
-        model = gl.ssl.laplace(W = W , class_priors=class_priors, bug = bug, reweighting = 'wnll')
+        model = gl.ssl.laplace(W = W , class_priors=class_priors, bug = bug, reweighting = 'none')
 
     elif method == 'Poisson':
         model = gl.ssl.poisson(W = W , class_priors=class_priors)

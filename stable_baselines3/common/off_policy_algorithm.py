@@ -416,37 +416,42 @@ class OffPolicyAlgorithm(BaseAlgorithm):
 
                 X_prime = th.cat((labeled_replay_data.next_observations, unlabeled_replay_data.next_observations), dim=0).numpy()[:, :2]
 
+                X_prime_unique = np.unique(X_prime, axis=0)
+
+                print("X_prime", X_prime.shape)
+                print("X_prime_unique", X_prime_unique.shape)
+                
                 rewards = labeled_replay_data.rewards.numpy()
 
-                W = construct_connected_W(X_prime)
+                W = construct_connected_W(X_prime_unique)
 
                 train_labels, unique_rewards, num_unique_labels, l2r = rewards_to_labels(rewards = rewards.astype(int))
+
                 train_ind = np.arange(state_action.shape[0], dtype=int)
 
                 # get actual true labels to log f1_scores
                 true_rewards = np.concatenate((rewards, unlabeled_replay_data.rewards.numpy()), axis=0).flatten()
 
-                print("W", W.shape)
                 print("Train labels", train_labels, type(train_labels), train_labels.shape)
                 print("Train indices", train_ind, type(train_ind), train_ind.shape)
                 
-                pred_labels = infer_rewards_SSL(
+                pred_labels, _, _ = infer_rewards_SSL(
                                     method = 'Laplace',
                                     W = W, 
                                     train_labels = train_labels,
                                     train_ind = train_ind,
-                                    get_uncertainty = False
+                                    get_uncertainty = True
                                 )
-
+    
                 pseudo_rewards = th.tensor(list(map(lambda l: l2r[l.item()], pred_labels)))
 
                 f1 = f1_score(np.delete(pseudo_rewards, train_ind), np.delete(true_rewards,train_ind), average='micro')
 
-                print("Pred labels", pred_labels)
+                print("Pred labels", pred_labels[:100])
                 print("Train labels", train_labels.shape, train_labels)
-                print("True rewards", true_rewards.shape)
-                print(f"f1_score {f1}")
-                print("True rewards", true_rewards[:100])
+                print(f"F1_score {f1}")
+                print("True rewards",  true_rewards.shape, true_rewards[:100])
+                print("Pseudo rewards", pseudo_rewards.shape, pseudo_rewards[:100].numpy())
 
                 raise Exception
             
