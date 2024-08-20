@@ -18,7 +18,7 @@ from stable_baselines3.common.noise import ActionNoise, VectorizedActionNoise
 from stable_baselines3.common.policies import BasePolicy
 from stable_baselines3.common.save_util import load_from_pkl, save_to_pkl
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, RolloutReturn, Schedule, TrainFreq, TrainFrequencyUnit
-from stable_baselines3.common.utils import safe_mean, should_collect_more_steps
+from stable_baselines3.common.utils import safe_mean, should_collect_more_steps, construct_connected_W, infer_rewards_SSL, rewards_to_labels
 from stable_baselines3.common.vec_env import VecEnv
 from stable_baselines3.her.her_replay_buffer import HerReplayBuffer
 
@@ -86,7 +86,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         buffer_size: int = 1_000_000,  # 1e6
         learning_starts: int = 100,
         batch_size: int = 256,
-        pseudo_batch_size: int = 512,
+        ssl_batch_size: int = 512,
         tau: float = 0.005,
         gamma: float = 0.99,
         train_freq: Union[int, Tuple[int, str]] = (1, "step"),
@@ -109,7 +109,8 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         sde_support: bool = True,
         supported_action_spaces: Optional[Tuple[Type[spaces.Space], ...]] = None,
         p: float = 1.,
-        pseudo_mode: bool = False
+        pseudo_mode: bool = False,
+        ssl_freq: int = 100        
     ):
         super().__init__(
             policy=policy,
@@ -129,7 +130,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         )
         self.buffer_size = buffer_size
         self.batch_size = batch_size
-        self.pseudo_batch_size = pseudo_batch_size
+        self.ssl_batch_size = ssl_batch_size
         self.learning_starts = learning_starts
         self.tau = tau
         self.gamma = gamma
@@ -146,8 +147,9 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         self.p = p
         self.pseudo_mode = pseudo_mode
 
-        # Save train freq parameter, will be converted later to TrainFreq object
+        # Save train and ssl freq parameter, will be converted later to TrainFreq object
         self.train_freq = train_freq
+        self.ssl_freq = ssl_freq
 
         # Update policy keyword arguments
         if sde_support:
@@ -189,7 +191,6 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             else:
                 self.replay_buffer_class = ReplayBuffer
 
-
         if self.replay_buffer is None:
             # Make a local copy as we should not pickle
             # the environment when using HerReplayBuffer
@@ -212,7 +213,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             self.unlabeled_replay_buffer = None
 
             if self.pseudo_mode:
-                self.unlabeled_replay_buffer = self.replay_buffer_class(
+                self.ssl_replay_buffer = self.replay_buffer_class(
                     self.buffer_size,
                     self.observation_space,
                     self.action_space,
@@ -221,6 +222,17 @@ class OffPolicyAlgorithm(BaseAlgorithm):
                     optimize_memory_usage=self.optimize_memory_usage,
                     **replay_buffer_kwargs,
                     pseudo_mode=True
+                )
+
+                self.unlabeled_replay_buffer = self.replay_buffer_class(
+                    self.buffer_size,
+                    self.observation_space,
+                    self.action_space,
+                    device=self.device,
+                    n_envs=self.n_envs,
+                    optimize_memory_usage=self.optimize_memory_usage,
+                    **replay_buffer_kwargs,
+                    pseudo_mode=False
                 )
 
         self.policy = self.policy_class(
@@ -377,6 +389,58 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             # 
             # SSL on unlabeled data to obtain pseudo_rewards. 
             #  
+            if self.num_timesteps % self.ssl_freq:
+                # Completely reset the ssl_replay_buffer
+                self.ssl_replay_buffer.reset()
+                
+                # Get all labeled + unlabeled data
+                labeled_replay_data = self.replay_buffer._get_samples(np.arange(self.replay_buffer.size()))
+
+                unlabeled_replay_data = self.unlabeled_replay_buffer._get_samples(self.unlabeled_replay_buffer.size())
+
+                unlabeled_state_action = th.cat((unlabeled_replay_data.observations, unlabeled_replay_data.actions), dim=1)
+
+                state_action = th.cat((labeled_replay_data.observations, labeled_replay_data.actions), dim=1)
+
+                X = th.cat((state_action, unlabeled_state_action), dim=0).numpy()
+
+                rewards = labeled_replay_data.rewards.numpy()
+
+                W = construct_connected_W(X)
+
+                train_labels, unique_rewards, num_unique_labels, l2r = rewards_to_labels(rewards = rewards.astype(int))
+                
+                train_ind = np.arange(state_action.shape[0], dtype=int)
+
+                pred_labels = infer_rewards_SSL(
+                                    method = 'Laplace',
+                                    W = W, 
+                                    train_labels = train_labels,
+                                    train_ind = train_ind,
+                                    get_uncertainty = False
+                                )
+                
+                mask = np.ones(pred_labels.shape[0], dtype=int)
+
+                mask[train_ind] = 0
+
+                pred_labels = th.from_numpy(pred_labels[mask.astype(bool)])
+
+                pseudo_rewards = th.tensor(list(map(lambda l: l2r[l.item()], pred_labels)))
+
+                # Basically just unlabeled with different rewards
+                self.ssl_replay_buffer.add(
+                self.unlabeled_replay_buffer.observations,  # type: ignore[arg-type]
+                self.unlabeled_replay_buffer.next_observations,  # type: ignore[arg-type]
+                self.unlabeled_replay_buffer.actions,
+                self.unlabeled_replay_buffer.rewards,
+                self.unlabeled_replay_buffer.dones,
+                self.unlabeled_replay_buffer.infos,
+                pseudo_rewards
+                )
+
+                self.ssl_replay_buffer.add()
+
 
             # Train using all labeled and unlabeled data. 
             if self.num_timesteps > 0 and self.num_timesteps > self.learning_starts:
@@ -386,13 +450,13 @@ class OffPolicyAlgorithm(BaseAlgorithm):
                 # Special case when the user passes `gradient_steps=0`
                 # Perform gradient descent
                 if gradient_steps > 0:
-                    self.train(batch_size=self.batch_size, pseudo_batch_size=self.pseudo_batch_size, gradient_steps=gradient_steps)
+                    self.train(batch_size=self.batch_size, ssl_batch_size=self.ssl_batch_size, gradient_steps=gradient_steps)
 
         callback.on_training_end()
 
         return self
 
-    def train(self, gradient_steps: int, batch_size: int, pseudo_batch_size: int) -> None:
+    def train(self, gradient_steps: int, batch_size: int, ssl_batch_size: int) -> None:
         """
         Sample the replay buffer and do the updates
         (gradient descent and update target networks)
@@ -639,10 +703,12 @@ class OffPolicyAlgorithm(BaseAlgorithm):
 
             # Store data in replay buffer (normalized action and unnormalized observation)
             # Modification should be inside, since there can be multiple envs in parallel.  
-            # Here it is. On the info, add a boolean representing if pseudo or not. 
+            # Here it is. 
             self._store_transition(replay_buffer, buffer_actions, new_obs, rewards, dones, infos, unlabeled_replay_buffer)  # type: ignore[arg-type]
+
             self._logger.record("buffer/num_labeled_rewards", self.replay_buffer.size())
             if self.pseudo_mode and self.p < 1: self._logger.record("buffer/num_unlabeled_rewards", self.unlabeled_replay_buffer.size())
+
             self._update_current_progress_remaining(self.num_timesteps, self._total_timesteps)
 
             # For DQN, check if the target network should be updated

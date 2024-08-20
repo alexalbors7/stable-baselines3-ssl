@@ -207,7 +207,7 @@ class DQN(OffPolicyAlgorithm):
         self.exploration_rate = self.exploration_schedule(self._current_progress_remaining)
         self.logger.record("rollout/exploration_rate", self.exploration_rate)
 
-    def train(self, gradient_steps: int, batch_size: int, pseudo_batch_size: int) -> None:
+    def train(self, gradient_steps: int, batch_size: int, ssl_batch_size: int) -> None:
         # Switch to train mode (this affects batch norm / dropout)
         self.policy.set_training_mode(True)
         # Update learning rate according to schedule
@@ -217,40 +217,20 @@ class DQN(OffPolicyAlgorithm):
         for i in range(gradient_steps):
             # Sample replay buffer (only annotated)
 
-            replay_data, batch_inds = self.replay_buffer.sample(batch_size = batch_size, env=self._vec_normalize_env)  # type: ignore[union-attr]
+            labeled_batch_size = min((batch_size, self.replay_buffer.size()))
+            replay_data, batch_inds = self.replay_buffer.sample(batch_size = labeled_batch_size, env=self._vec_normalize_env)  # type: ignore[union-attr]
             observations = replay_data.observations
             actions = replay_data.actions.long()
 
-            if self.pseudo_mode and i % 20*self.train_freq.frequency == 0:
+            if self.pseudo_mode:
 
-                pseudo_replay_data, pseudo_batch_inds = self.pseudo_replay_buffer.sample(batch_size = pseudo_batch_size, env=self._vec_normalize_env)
+                # Won't have problem of having too few samples but it's okay. 
+                ssl_batch_size = min((ssl_batch_size, self.ssl_replay_buffer.size()))
+                ssl_replay_data, ssl_batch_inds = self.ssl_replay_buffer.sample(batch_size = ssl_batch_size, env=self._vec_normalize_env)  # type: ignore[union-attr]
 
-                pseudo_state_action = th.cat((pseudo_replay_data.observations, pseudo_replay_data.actions), dim=1)
+                ssl_observations = ssl_replay_data.observations
+                ssl_actions = ssl_replay_data.actions.long()
 
-                state_action = th.cat((replay_data.observations, replay_data.actions), dim=1)
-
-                X = th.cat((state_action, pseudo_state_action), dim=0).numpy()
-
-                rewards = replay_data.rewards.numpy()
-
-                W = construct_connected_W(X)
-
-                train_labels, unique_rewards, num_unique_labels, l2r = rewards_to_labels(rewards = rewards.astype(int))
-                
-                train_ind = np.arange(state_action.shape[0], dtype=int)
-
-                pred_labels = infer_rewards_SSL(
-                                    method = 'Laplace',
-                                    W = W, 
-                                    train_labels = train_labels,
-                                    train_ind = train_ind,
-                                    get_uncertainty = False
-                                )
-                
-                mask = np.ones(pred_labels.shape[0], dtype=int)
-                mask[train_ind] = 0
-                pred_labels = th.from_numpy(pred_labels[mask.astype(bool)])
-                pseudo_rewards = th.tensor(list(map(lambda l: l2r[l.item()], pred_labels)))
 
                 # print(f"X, {X.shape}, {type(X)}")
                 # print(f"rewards, {rewards.shape}, {type(rewards)}")
@@ -270,27 +250,19 @@ class DQN(OffPolicyAlgorithm):
                 target_q_values = replay_data.rewards + (1 - replay_data.dones) * self.gamma * next_q_values
 
                 if self.pseudo_mode:
-                    pseudo_next_q_values = self.q_net_target(pseudo_replay_data.next_observations)
+                    # Add a batch of SSL'd labeled transitions to accelerate training. 
+                    pseudo_next_q_values = self.q_net_target(ssl_replay_data.next_observations)
                     # Follow greedy policy: use the one with the highest value
                     pseudo_next_q_values, pseudo_max_indices = pseudo_next_q_values.max(dim=1)
                     # Avoid potential broadcast issue
                     pseudo_next_q_values = pseudo_next_q_values.reshape(-1, 1)
-                    # 1-step TD target
-
-                    # print(f"pseudo_rewards ,{pseudo_rewards.shape}")
-                    # prcint("pseudo_replay_data.dones.", pseudo_replay_data.dones.shape)
-                    # print("pseudo_next_q_values", pseudo_next_q_values.shape)
-
-                    pseudo_target_q_values = pseudo_rewards.reshape(-1, 1) + (1 - pseudo_replay_data.dones) * self.gamma * pseudo_next_q_values
-                    
-                    self.logger.record("SSL/iters", 1)
-
-                    # print("target_q_values", target_q_values.shape)
-                    # print("pseudo_target_q_values", pseudo_target_q_values.shape)
-
+                    # 1-step TD target: Use pseudo_rewards, rewards should be the true underlying ones, since will need them for querying in active learning
+                    # SSL_buffer is only buffer with pseudo_reward compartment. 
+                    pseudo_target_q_values = ssl_replay_data.pseudo_rewards + (1 - ssl_replay_data.dones) * self.gamma * pseudo_next_q_values
+                       
                     target_q_values = th.cat((target_q_values, pseudo_target_q_values), dim=0)
-                    observations = th.cat((observations, pseudo_replay_data.observations), dim=0)
-                    actions = th.cat((actions, pseudo_replay_data.actions.long()), dim=0)
+                    observations = th.cat((observations, ssl_observations), dim=0)
+                    actions = th.cat((actions, ssl_actions), dim=0)
 
             # Get current Q-values estimates
             current_q_values = self.q_net(observations)

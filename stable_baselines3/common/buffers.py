@@ -224,7 +224,7 @@ class ReplayBuffer(BaseBuffer):
         " Plan: Keep two replay buffers. If pseudo_replay_buffer, allow pseudo mode so it can hold pseudo and true rewards. "
         self.rewards = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.dones = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
-        # Add pseudo compartment if needed. 
+        # Add pseudo compartment if needed (ONLY FOR SSL ONE). 
         if self.pseudo_mode:  self.pseudo_rewards = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         # Handle timeouts termination properly if needed
         # see https://github.com/DLR-RM/stable-baselines3/issues/284
@@ -256,6 +256,7 @@ class ReplayBuffer(BaseBuffer):
         reward: np.ndarray,
         done: np.ndarray,
         infos: List[Dict[str, Any]],
+        pseudo_rewards = None
     ) -> None:
         
         # Reshape needed when using multiple envs with discrete observations
@@ -278,7 +279,8 @@ class ReplayBuffer(BaseBuffer):
         self.actions[self.pos] = np.array(action)
         self.rewards[self.pos] = np.array(reward)
         self.dones[self.pos] = np.array(done)
-        
+        # Only happens for ssl buffer
+        if self.pseudo_mode: self.pseudo_rewards[self.pos] = np.array(pseudo_rewards)
 
         if self.handle_timeout_termination:
             self.timeouts[self.pos] = np.array([info.get("TimeLimit.truncated", False) for info in infos])
@@ -306,15 +308,12 @@ class ReplayBuffer(BaseBuffer):
             return super().sample(batch_size=batch_size, env=env)
         # Do not sample the element with index `self.pos` as the transitions is invalid
         # (we use only one array to store `obs` and `next_obs`)
-        if self.full and not self.pseudo_mode:
+        if self.full:
             batch_inds = (np.random.randint(1, self.buffer_size, size=batch_size) + self.pos) % self.buffer_size
-        elif self.full: # If pseudo, always pick the latest ones. 
-            batch_inds = (np.arange(self.buffer_size-batch_size, self.buffer_size) + self.pos) % self.buffer_size
         else:
             batch_inds = np.random.randint(0, self.pos, size=batch_size)
         
         return self._get_samples(batch_inds, env=env), batch_inds
-    
 
     def _get_samples(self, batch_inds: np.ndarray, env: Optional[VecNormalize] = None) -> ReplayBufferSamples:
         # Sample randomly the env idx
