@@ -11,6 +11,7 @@ import torch as th
 from gymnasium import spaces
 import time
 from sklearn.metrics import f1_score
+import graphlearning as gl
 
 from stable_baselines3.common.base_class import BaseAlgorithm
 from stable_baselines3.common.buffers import DictReplayBuffer, ReplayBuffer
@@ -407,9 +408,16 @@ class OffPolicyAlgorithm(BaseAlgorithm):
                     print("Unlabeled data action shape", unlabeled_replay_data.actions.shape)
 
                 # Pair into (s, a) pairs. (For Active grids it would be easier to use next_obs as the reward setter but kind of cheating)
-                unlabeled_state_action = th.cat((unlabeled_replay_data.observations, unlabeled_replay_data.actions), dim=1)
-                labeled_state_action = th.cat((labeled_replay_data.observations, labeled_replay_data.actions), dim=1)
-                X = th.cat((labeled_state_action, unlabeled_state_action), dim=0).numpy()
+                # One hot encode actions beforehand
+
+                
+                unlabeled_actions_1hot = gl.utils.labels_to_onehot(unlabeled_replay_data.actions.numpy().flatten(), 4).reshape(-1, 4)
+                labeled_actions_1hot = gl.utils.labels_to_onehot(labeled_replay_data.actions.numpy().flatten(), 4).reshape(-1, 4)
+                
+
+                unlabeled_state_action = np.concatenate((unlabeled_replay_data.observations, unlabeled_actions_1hot), axis=1)
+                labeled_state_action = np.concatenate((labeled_replay_data.observations, labeled_actions_1hot), axis=1)
+
 
                 labeled_rewards = labeled_replay_data.rewards.numpy()
                 unlabeled_rewards = unlabeled_replay_data.rewards.numpy()
@@ -428,12 +436,12 @@ class OffPolicyAlgorithm(BaseAlgorithm):
 
                 unique_unlabeled_sa, unique_unlabeled_ind = np.unique(unlabeled_state_action, axis=0, return_index=True)
                 unique_unlabeled_ind = np.sort(unique_unlabeled_ind)
-                unique_unlabeled_sa = unlabeled_state_action[unique_unlabeled_ind].numpy()
+                unique_unlabeled_sa = unlabeled_state_action[unique_unlabeled_ind]
                 unique_unlabeled_rewards = unlabeled_rewards[unique_unlabeled_ind]
 
                 unique_labeled_sa, unique_labeled_ind = np.unique(labeled_state_action, axis=0, return_index=True)
                 unique_labeled_ind = np.sort(unique_labeled_ind)
-                unique_labeled_sa = labeled_state_action[unique_labeled_ind].numpy()
+                unique_labeled_sa = labeled_state_action[unique_labeled_ind]
                 unique_labeled_rewards = labeled_rewards[unique_labeled_ind]
 
                 # THEN CONSTRUCT DATA BEING UNIQUE BY CONCATENATING UNLABELED + LABELED
@@ -441,7 +449,6 @@ class OffPolicyAlgorithm(BaseAlgorithm):
                 X_prime = np.concatenate((unique_unlabeled_sa, unique_labeled_sa), axis=0)
                 # but there might be redundancies between labeled and unlabeled set
                 X_prime_unique, concatenated_unique_ind = np.unique(X_prime, axis=0, return_index=True)
-
                 
                 # keep them while respecting order by sorting indices beforehand
                 concatenated_unique_ind = np.sort(concatenated_unique_ind)
@@ -457,7 +464,10 @@ class OffPolicyAlgorithm(BaseAlgorithm):
                 true_rewards = np.concatenate((unique_labeled_rewards, unique_unlabeled_rewards), axis=0).flatten()[concatenated_unique_ind].astype(int)
 
                 if verbose:
-                    print("Total number of unlabeled+labeled: ", X_prime_unique.shape[0])
+                    print("actions 1 hot", unlabeled_actions_1hot.shape)
+                    print("Unlabeled state action 1 hot", unlabeled_state_action.shape)
+                    print("Labeled state action 1 hot", labeled_state_action.shape)
+                    print("Total number of unlabeled+labeled after uniqueness filtering: ", X_prime_unique.shape[0])
                     print("Train labels", train_labels, type(train_labels), train_labels.shape)
                     print("Train indices", train_ind, type(train_ind), train_ind.shape)
                 
@@ -483,7 +493,6 @@ class OffPolicyAlgorithm(BaseAlgorithm):
                     print("Pseudo rewards", pseudo_rewards.shape, pseudo_rewards[:100].numpy())
                 
                 self.logger.record("ssl/f1_score", f1)
-
                 # Now we can only extend the unique ones, remember...
 
                 # Basically just unlabeled with different rewards
@@ -496,7 +505,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
                     self.unlabeled_replay_buffer.timeouts[np.arange(self.unlabeled_replay_buffer.size())][unique_unlabeled_ind],
                     np.delete(pseudo_rewards, train_ind) # No need since pseudo_rewards already processed
                 )
-
+            
                 self.logger.record("buffer/num_ssl_rewards", self.ssl_replay_buffer.size())
 
 
