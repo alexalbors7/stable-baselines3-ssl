@@ -153,7 +153,6 @@ class OffPolicyAlgorithm(BaseAlgorithm):
 
         # SSL info
         self.ssl_freq = ssl_freq
-        self.ssl_steps = 0
 
         # Update policy keyword arguments
         if sde_support:
@@ -392,7 +391,6 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             if self.pseudo_mode and self.num_timesteps % self.ssl_freq == 0 and self.num_timesteps > self.learning_starts // 2:
                 # Completely reset the ssl_replay_buffer
                 # print(self.num_timesteps)
-                self.ssl_steps += 1
                 self.ssl_replay_buffer.reset()
                 
                 # This is indices for amount of unlabeled data we get
@@ -403,9 +401,10 @@ class OffPolicyAlgorithm(BaseAlgorithm):
                 labeled_replay_data = self.replay_buffer._get_samples(labeled_data_ind)
                 unlabeled_replay_data = self.unlabeled_replay_buffer._get_samples(unlabeled_data_ind)
 
-                # print("Labeled data obs shape", labeled_replay_data.observations.shape)
-                # print("Unlabeled data obs shape", unlabeled_replay_data.observations.shape)
-                # print("Unlabeled data action shape", unlabeled_replay_data.actions.shape)
+                if verbose:
+                    print("Labeled data obs shape", labeled_replay_data.observations.shape)
+                    print("Unlabeled data obs shape", unlabeled_replay_data.observations.shape)
+                    print("Unlabeled data action shape", unlabeled_replay_data.actions.shape)
 
                 # Pair into (s, a) pairs. (For Active grids it would be easier to use next_obs as the reward setter but kind of cheating)
                 unlabeled_state_action = th.cat((unlabeled_replay_data.observations, unlabeled_replay_data.actions), dim=1)
@@ -415,41 +414,52 @@ class OffPolicyAlgorithm(BaseAlgorithm):
                 labeled_rewards = labeled_replay_data.rewards.numpy()
                 unlabeled_rewards = unlabeled_replay_data.rewards.numpy()
 
-                # FIRST ENSURE OBSERVATIONS ARE ALL UNIQUE, BOTH FOR LABELED AND UNLABELED, WHILE REPSECTING RELATIVE ORDER, AND SAVE RELEVANT INDICES
-                unique_labeled_next_obs, unique_labeled_ind = np.unique(labeled_replay_data.next_observations[:, :2], axis=0, return_index=True)
-                unique_labeled_ind = np.sort(unique_labeled_ind)
-                unique_labeled_next_obs = labeled_replay_data.next_observations[unique_labeled_ind, :2].numpy()
-                unique_labeled_rewards = labeled_rewards[unique_labeled_ind]
+                # FIRST ENSURE OBSERVATIONS ARE ALL UNIQUE, BOTH FOR LABELED AND UNLABELED, WHILE RESPECTING RELATIVE ORDER, AND SAVE RELEVANT INDICES
+                # Now do this for state, action pairs.  
+                # unique_labeled_next_obs, unique_labeled_ind = np.unique(labeled_replay_data.next_observations[:, :2], axis=0, return_index=True)
+                # unique_labeled_ind = np.sort(unique_labeled_ind)
+                # unique_labeled_next_obs = labeled_replay_data.next_observations[unique_labeled_ind, :2].numpy()
+                # unique_labeled_rewards = labeled_rewards[unique_labeled_ind]
 
-                unique_unlabeled_next_obs, unique_unlabeled_ind = np.unique(unlabeled_replay_data.next_observations[:, :2], axis=0, return_index=True)
+                # unique_unlabeled_next_obs, unique_unlabeled_ind = np.unique(unlabeled_replay_data.next_observations[:, :2], axis=0, return_index=True)
+                # unique_unlabeled_ind = np.sort(unique_unlabeled_ind)
+                # unique_unlabeled_next_obs = unlabeled_replay_data.next_observations[unique_unlabeled_ind, :2].numpy()
+                # unique_unlabeled_rewards = unlabeled_rewards[unique_unlabeled_ind]
+
+                unique_unlabeled_sa, unique_unlabeled_ind = np.unique(unlabeled_state_action, axis=0, return_index=True)
                 unique_unlabeled_ind = np.sort(unique_unlabeled_ind)
-                unique_unlabeled_next_obs = unlabeled_replay_data.next_observations[unique_unlabeled_ind, :2].numpy()
+                unique_unlabeled_sa = unlabeled_state_action[unique_unlabeled_ind].numpy()
                 unique_unlabeled_rewards = unlabeled_rewards[unique_unlabeled_ind]
 
-                # THEN CONSTRUCT DATA BEING UNIQUE BY CONCATENATING UNLABELED + LABELED
-                X_prime = np.concatenate((unique_labeled_next_obs, unique_unlabeled_next_obs), axis=0)
+                unique_labeled_sa, unique_labeled_ind = np.unique(labeled_state_action, axis=0, return_index=True)
+                unique_labeled_ind = np.sort(unique_labeled_ind)
+                unique_labeled_sa = labeled_state_action[unique_labeled_ind].numpy()
+                unique_labeled_rewards = labeled_rewards[unique_labeled_ind]
 
-                # BUT THERE MIGHT BE MORE REDUNDANCIES
+                # THEN CONSTRUCT DATA BEING UNIQUE BY CONCATENATING UNLABELED + LABELED
+                #X_prime = np.concatenate((unique_labeled_next_obs, unique_unlabeled_next_obs), axis=0)
+                X_prime = np.concatenate((unique_unlabeled_sa, unique_labeled_sa), axis=0)
+                # but there might be redundancies between labeled and unlabeled set
                 X_prime_unique, concatenated_unique_ind = np.unique(X_prime, axis=0, return_index=True)
 
+                
+                # keep them while respecting order by sorting indices beforehand
                 concatenated_unique_ind = np.sort(concatenated_unique_ind)
-
-                # KEEP THEM WHILE RESPECTING ORDER, THAT IS ENSURING WE MAINTAIN THE LABELED ONES?
                 X_prime_unique = X_prime[concatenated_unique_ind]
                 
                 W = construct_connected_W(X_prime_unique)
 
                 train_labels, _, _, l2r = rewards_to_labels(rewards = unique_labeled_rewards.astype(int))
 
-                train_ind = np.arange(unique_labeled_next_obs.shape[0], dtype=int)
+                train_ind = np.arange(unique_labeled_sa.shape[0], dtype=int)
 
                 # get actual true labels to log f1_scores
                 true_rewards = np.concatenate((unique_labeled_rewards, unique_unlabeled_rewards), axis=0).flatten()[concatenated_unique_ind].astype(int)
+
                 if verbose:
                     print("Total number of unlabeled+labeled: ", X_prime_unique.shape[0])
                     print("Train labels", train_labels, type(train_labels), train_labels.shape)
                     print("Train indices", train_ind, type(train_ind), train_ind.shape)
-
                 
                 pred_labels, _, _ = infer_rewards_SSL(
                                     method = 'Laplace',
@@ -472,8 +482,6 @@ class OffPolicyAlgorithm(BaseAlgorithm):
                     print("True rewards",  true_rewards.shape, true_rewards[:100])
                     print("Pseudo rewards", pseudo_rewards.shape, pseudo_rewards[:100].numpy())
                 
-                
-                self.logger.record("ssl/steps", self.ssl_steps)
                 self.logger.record("ssl/f1_score", f1)
 
                 # Now we can only extend the unique ones, remember...
@@ -577,6 +585,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             self.logger.record("rollout/ep_rew_mean", safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
             self.logger.record("rollout/ep_len_mean", safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
         self.logger.record("time/fps", fps)
+        self.logger.record("buffer/available_rewards", self.ssl_replay_buffer.size() + self.replay_buffer.size(), exclude="tensorboard")
         self.logger.record("time/time_elapsed", int(time_elapsed), exclude="tensorboard")
         self.logger.record("time/total_timesteps", self.num_timesteps, exclude="tensorboard")
         if self.use_sde:
@@ -648,9 +657,6 @@ class OffPolicyAlgorithm(BaseAlgorithm):
                         next_obs[i] = self._vec_normalize_env.unnormalize_obs(next_obs[i, :])
         
         if np.random.random() < self.p:
-
-            for i, _ in enumerate(infos):
-                infos[i]["labeled"] = True
             
             true_replay_buffer.add(
                 self._last_original_obs,  # type: ignore[arg-type]
@@ -661,10 +667,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
                 infos,
             )
 
-        elif unlabeled_replay_buffer is not None: # We add into pseudo-labels in case we have pseudo-buffer, indicating so. 
-
-            for i, _ in enumerate(infos):
-                infos[i]["labeled"] = False
+        elif unlabeled_replay_buffer is not None: # We add into pseudo-labels in case we have pseudo-buffer
             
             unlabeled_replay_buffer.add(
                 self._last_original_obs,  # type: ignore[arg-type]
