@@ -97,7 +97,9 @@ class DQN(OffPolicyAlgorithm):
         policy: Union[str, Type[DQNPolicy]],
         env: Union[GymEnv, str],
         learning_rate: Union[float, Schedule] = 1e-4,
-        buffer_size: int = 1_000_000,  # 1e6
+        buffer_size: int = 1_000_000,  # 1e6,
+        unlabeled_buffer_size: int = 100_000,
+        ssl_buffer_size: int = 100_000,
         learning_starts: int = 100,
         batch_size: int = 32,
         ssl_batch_size: int = 100,
@@ -122,13 +124,16 @@ class DQN(OffPolicyAlgorithm):
         _init_setup_model: bool = True,
         p: float = 1.,
         pseudo_mode: bool = False,
-        ssl_freq: int = 100
+        ssl_freq: int = 100,
+        method: str = 'Laplace'
     ) -> None:
         super().__init__(
             policy,
             env,
             learning_rate,
             buffer_size,
+            unlabeled_buffer_size,
+            ssl_buffer_size,
             learning_starts,
             batch_size,
             ssl_batch_size,
@@ -151,7 +156,8 @@ class DQN(OffPolicyAlgorithm):
             support_multi_env = True,
             p = p,
             pseudo_mode=pseudo_mode,
-            ssl_freq=ssl_freq
+            ssl_freq=ssl_freq,
+            method=method
         )
 
         self.exploration_initial_eps = exploration_initial_eps
@@ -220,6 +226,8 @@ class DQN(OffPolicyAlgorithm):
             # Sample replay buffer (only annotated)
 
             labeled_batch_size = min((batch_size, self.replay_buffer.size()))
+
+
             replay_data, batch_inds = self.replay_buffer.sample(batch_size = labeled_batch_size, env=self._vec_normalize_env)  # type: ignore[union-attr]
             observations = replay_data.observations
             actions = replay_data.actions.long()

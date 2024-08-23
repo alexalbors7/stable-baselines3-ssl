@@ -86,6 +86,8 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         env: Union[GymEnv, str],
         learning_rate: Union[float, Schedule],
         buffer_size: int = 1_000_000,  # 1e6
+        unlabeled_buffer_size: int = 100_000,
+        ssl_buffer_size: int = 100_000,
         learning_starts: int = 100,
         batch_size: int = 256,
         ssl_batch_size: int = 512,
@@ -112,7 +114,8 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         supported_action_spaces: Optional[Tuple[Type[spaces.Space], ...]] = None,
         p: float = 1.,
         pseudo_mode: bool = False,
-        ssl_freq: int = 100        
+        ssl_freq: int = 100,
+        method: str = 'Laplace'        
     ):
         super().__init__(
             policy=policy,
@@ -130,7 +133,11 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             sde_sample_freq=sde_sample_freq,
             supported_action_spaces=supported_action_spaces,
         )
-        self.buffer_size = buffer_size
+        
+        self.method = method
+        self.buffer_size = buffer_size 
+        self.unlabeled_buffer_size = unlabeled_buffer_size
+        self.ssl_buffer_size = ssl_buffer_size
         self.batch_size = batch_size
         self.ssl_batch_size = ssl_batch_size
         self.learning_starts = learning_starts
@@ -218,7 +225,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
 
             if self.pseudo_mode:
                 self.ssl_replay_buffer = self.replay_buffer_class(
-                    self.buffer_size,
+                    self.ssl_buffer_size,
                     self.observation_space,
                     self.action_space,
                     device=self.device,
@@ -229,7 +236,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
                 )
 
                 self.unlabeled_replay_buffer = self.replay_buffer_class(
-                    self.buffer_size,
+                    self.unlabeled_buffer_size,
                     self.observation_space,
                     self.action_space,
                     device=self.device,
@@ -413,11 +420,9 @@ class OffPolicyAlgorithm(BaseAlgorithm):
                 
                 unlabeled_actions_1hot = gl.utils.labels_to_onehot(unlabeled_replay_data.actions.numpy().flatten(), 4).reshape(-1, 4)
                 labeled_actions_1hot = gl.utils.labels_to_onehot(labeled_replay_data.actions.numpy().flatten(), 4).reshape(-1, 4)
-                
 
                 unlabeled_state_action = np.concatenate((unlabeled_replay_data.observations, unlabeled_actions_1hot), axis=1)
                 labeled_state_action = np.concatenate((labeled_replay_data.observations, labeled_actions_1hot), axis=1)
-
 
                 labeled_rewards = labeled_replay_data.rewards.numpy()
                 unlabeled_rewards = unlabeled_replay_data.rewards.numpy()
@@ -472,7 +477,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
                     print("Train indices", train_ind, type(train_ind), train_ind.shape)
                 
                 pred_labels, _, _ = infer_rewards_SSL(
-                                    method = 'Laplace',
+                                    method = self.method,
                                     W = W, 
                                     train_labels = train_labels,
                                     train_ind = train_ind,
